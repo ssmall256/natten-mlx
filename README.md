@@ -112,12 +112,12 @@ Median latency table (ms, lower is better):
 
 | Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal speedup vs pure | nanobind speedup vs pure |
 |---|---:|---:|---:|---:|---:|---:|
-| `na1d_k7_s1_d1_noncausal` | `forward` | 0.488 | 0.194 | 0.193 | 2.51x | 2.53x |
-| `na1d_k7_s1_d1_noncausal` | `backward` | 0.611 | 0.663 | 0.670 | 0.92x | 0.91x |
-| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.723 | 0.693 | 0.696 | 2.49x | 2.48x |
-| `na2d_k7x7_s1_d1_noncausal` | `backward` | 2.099 | 2.398 | 2.406 | 0.88x | 0.87x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.842 | 0.313 | 0.314 | 2.69x | 2.68x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.979 | 1.937 | 1.981 | 0.51x | 0.49x |
+| `na1d_k7_s1_d1_noncausal` | `forward` | 0.790 | 0.189 | 0.192 | 4.17x | 4.12x |
+| `na1d_k7_s1_d1_noncausal` | `backward` | 0.602 | 0.571 | 0.547 | 1.06x | 1.10x |
+| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.620 | 0.696 | 0.692 | 2.33x | 2.34x |
+| `na2d_k7x7_s1_d1_noncausal` | `backward` | 1.934 | 1.910 | 1.910 | 1.01x | 1.01x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.859 | 0.304 | 0.318 | 2.83x | 2.70x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.988 | 0.992 | 0.991 | 1.00x | 1.00x |
 
 Raw artifacts are written to:
 - `benchmarks/final-perf.json`

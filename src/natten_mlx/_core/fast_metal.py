@@ -335,6 +335,34 @@ def _with_grad_fallback(fn, fallback):
         return fallback()
 
 
+def _scatter_neighbor_contrib_1d(
+    contrib: mx.array,
+    indices: mx.array,
+    valid: mx.array,
+    input_length: int,
+) -> mx.array:
+    # contrib: [B, O, H, K, D], indices/valid: [O, K] -> out: [B, L, H, D]
+    positions = mx.arange(input_length, dtype=mx.int32)
+    one_hot = mx.equal(indices[..., None], positions[None, None, :])
+    one_hot = mx.logical_and(one_hot, valid[..., None])
+    weights = _cast(one_hot, contrib.dtype)
+    return mx.einsum("bohkd,okl->blhd", contrib, weights)
+
+
+def _scatter_neighbor_contrib_flat(
+    contrib: mx.array,
+    indices_flat: mx.array,
+    valid_flat: mx.array,
+    input_size: int,
+) -> mx.array:
+    # contrib: [B, O, H, K, D], indices/valid: [O, K] -> out: [B, L, H, D]
+    positions = mx.arange(input_size, dtype=mx.int32)
+    one_hot = mx.equal(indices_flat[..., None], positions[None, None, :])
+    one_hot = mx.logical_and(one_hot, valid_flat[..., None])
+    weights = _cast(one_hot, contrib.dtype)
+    return mx.einsum("bohkd,okl->blhd", contrib, weights)
+
+
 def na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
     if not is_available() or not _supports_1d_fused(kernel_size, stride, dilation):
         return pure.na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
@@ -801,11 +829,15 @@ def na1d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, s
         return pure.na1d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale)
 
     def _run():
-        def _loss(q_in, k_in, v_in):
-            out = na1d_forward(q_in, k_in, v_in, kernel_size, stride, dilation, is_causal, scale)
-            return mx.sum(out * grad_out)
-
-        return mx.grad(_loss, argnums=(0, 1, 2))(q, k, v)
+        logits = na1d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale)
+        attn = mx.softmax(logits, axis=-1)
+        grad_attn, grad_v = na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal)
+        softmax_inner = mx.sum(grad_attn * attn, axis=-1, keepdims=True)
+        grad_logits = attn * (grad_attn - softmax_inner)
+        grad_q, grad_k = na1d_qk_backward(
+            q, k, grad_logits, kernel_size, stride, dilation, is_causal, scale
+        )
+        return grad_q, grad_k, grad_v
 
     return _with_grad_fallback(
         _run,
@@ -818,11 +850,15 @@ def na2d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, s
         return pure.na2d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale)
 
     def _run():
-        def _loss(q_in, k_in, v_in):
-            out = na2d_forward(q_in, k_in, v_in, kernel_size, stride, dilation, is_causal, scale)
-            return mx.sum(out * grad_out)
-
-        return mx.grad(_loss, argnums=(0, 1, 2))(q, k, v)
+        logits = na2d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale)
+        attn = mx.softmax(logits, axis=-1)
+        grad_attn, grad_v = na2d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal)
+        softmax_inner = mx.sum(grad_attn * attn, axis=-1, keepdims=True)
+        grad_logits = attn * (grad_attn - softmax_inner)
+        grad_q, grad_k = na2d_qk_backward(
+            q, k, grad_logits, kernel_size, stride, dilation, is_causal, scale
+        )
+        return grad_q, grad_k, grad_v
 
     return _with_grad_fallback(
         _run,
@@ -838,11 +874,15 @@ def na3d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, s
         return pure.na3d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale)
 
     def _run():
-        def _loss(q_in, k_in, v_in):
-            out = na3d_forward(q_in, k_in, v_in, kernel_size, stride, dilation, is_causal, scale)
-            return mx.sum(out * grad_out)
-
-        return mx.grad(_loss, argnums=(0, 1, 2))(q, k, v)
+        logits = na3d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale)
+        attn = mx.softmax(logits, axis=-1)
+        grad_attn, grad_v = na3d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal)
+        softmax_inner = mx.sum(grad_attn * attn, axis=-1, keepdims=True)
+        grad_logits = attn * (grad_attn - softmax_inner)
+        grad_q, grad_k = na3d_qk_backward(
+            q, k, grad_logits, kernel_size, stride, dilation, is_causal, scale
+        )
+        return grad_q, grad_k, grad_v
 
     return _with_grad_fallback(
         _run,
@@ -854,12 +894,41 @@ def na1d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
     if not is_available() or not _supports_1d_split(kernel_size, stride, dilation, is_causal):
         return pure.na1d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale)
 
-    def _run():
-        def _loss(q_in, k_in):
-            out = na1d_qk_forward(q_in, k_in, kernel_size, stride, dilation, is_causal, scale)
-            return mx.sum(out * grad_attn)
+    batch, length, heads, head_dim = q.shape
+    ksize = int(kernel_size[0])
+    step = int(stride[0])
+    dil = int(dilation[0])
+    causal = bool(is_causal[0])
+    qpos_np = pure._query_positions(length, step)
+    out_len = len(qpos_np)
+    qpos = mx.array(qpos_np, dtype=mx.int32)
+    indices, valid = pure._compute_neighbor_indices_1d(
+        length, ksize, dil, causal, query_positions=qpos_np
+    )
+    valid_mask = valid[None, :, None, :]
+    scale_value = (head_dim ** -0.5) if scale is None else float(scale)
 
-        return mx.grad(_loss, argnums=(0, 1))(q, k)
+    def _run():
+        q_sel = mx.take(q, qpos, axis=1)
+        flat_idx = mx.reshape(indices, (-1,))
+        k_neighbors = mx.take(k, flat_idx, axis=1)
+        k_neighbors = mx.reshape(k_neighbors, (batch, out_len, ksize, heads, head_dim))
+        k_neighbors = mx.transpose(k_neighbors, axes=(0, 1, 3, 2, 4))
+
+        grad_attn_masked = mx.where(valid_mask, grad_attn, mx.zeros_like(grad_attn))
+        grad_q_sel = scale_value * mx.sum(grad_attn_masked[..., None] * k_neighbors, axis=-2)
+
+        grad_k_neighbors = scale_value * grad_attn_masked[..., None] * q_sel[..., None, :]
+        grad_k = _scatter_neighbor_contrib_1d(grad_k_neighbors, indices, valid, length)
+
+        idx = mx.reshape(qpos, (1, out_len, 1, 1))
+        grad_q = mx.put_along_axis(
+            mx.zeros(q.shape, dtype=q.dtype),
+            idx,
+            _cast(grad_q_sel, q.dtype),
+            axis=1,
+        )
+        return grad_q, _cast(grad_k, k.dtype)
 
     return _with_grad_fallback(
         _run,
@@ -871,12 +940,33 @@ def na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
     if not is_available() or not _supports_1d_split(kernel_size, stride, dilation, is_causal):
         return pure.na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal)
 
-    def _run():
-        def _loss(attn_in, v_in):
-            out = na1d_av_forward(attn_in, v_in, kernel_size, stride, dilation, is_causal)
-            return mx.sum(out * grad_out)
+    batch, out_len, heads, ksize = attn.shape
+    _, length, _, head_dim = v.shape
+    step = int(stride[0])
+    dil = int(dilation[0])
+    causal = bool(is_causal[0])
+    qpos_np = pure._query_positions(length, step)
+    if out_len != len(qpos_np):
+        return pure.na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal)
+    qpos = mx.array(qpos_np, dtype=mx.int32)
+    indices, valid = pure._compute_neighbor_indices_1d(
+        length, ksize, dil, causal, query_positions=qpos_np
+    )
+    valid_mask = valid[None, :, None, :]
 
-        return mx.grad(_loss, argnums=(0, 1))(attn, v)
+    def _run():
+        flat_idx = mx.reshape(indices, (-1,))
+        v_neighbors = mx.take(v, flat_idx, axis=1)
+        v_neighbors = mx.reshape(v_neighbors, (batch, out_len, ksize, heads, head_dim))
+        v_neighbors = mx.transpose(v_neighbors, axes=(0, 1, 3, 2, 4))
+
+        grad_attn = mx.sum(grad_out[..., None, :] * v_neighbors, axis=-1)
+        grad_attn = mx.where(valid_mask, grad_attn, mx.zeros_like(grad_attn))
+
+        attn_masked = mx.where(valid_mask, attn, mx.zeros_like(attn))
+        grad_v_neighbors = attn_masked[..., None] * grad_out[..., None, :]
+        grad_v = _scatter_neighbor_contrib_1d(grad_v_neighbors, indices, valid, length)
+        return _cast(grad_attn, attn.dtype), _cast(grad_v, v.dtype)
 
     return _with_grad_fallback(
         _run,
@@ -888,12 +978,66 @@ def na2d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
     if not is_available() or not _supports_2d_split(kernel_size, stride, dilation, is_causal):
         return pure.na2d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale)
 
-    def _run():
-        def _loss(q_in, k_in):
-            out = na2d_qk_forward(q_in, k_in, kernel_size, stride, dilation, is_causal, scale)
-            return mx.sum(out * grad_attn)
+    batch, height, width, heads, head_dim = q.shape
+    kh, kw = int(kernel_size[0]), int(kernel_size[1])
+    area = kh * kw
+    sh, sw = int(stride[0]), int(stride[1])
+    qh_np = pure._query_positions(height, sh)
+    qw_np = pure._query_positions(width, sw)
+    out_h = len(qh_np)
+    out_w = len(qw_np)
+    qh = mx.array(qh_np, dtype=mx.int32)
+    qw = mx.array(qw_np, dtype=mx.int32)
+    indices, valid = pure._compute_neighbor_indices_2d(
+        height,
+        width,
+        (kh, kw),
+        (int(dilation[0]), int(dilation[1])),
+        (bool(is_causal[0]), bool(is_causal[1])),
+        query_h=qh_np,
+        query_w=qw_np,
+    )
+    valid_mask = valid[None, :, :, None, :]
+    scale_value = (head_dim ** -0.5) if scale is None else float(scale)
+    flat_spatial = height * width
 
-        return mx.grad(_loss, argnums=(0, 1))(q, k)
+    def _run():
+        q_rows = mx.take(q, qh, axis=1)
+        q_sel = mx.take(q_rows, qw, axis=2)
+
+        k_flat = mx.reshape(k, (batch, flat_spatial, heads, head_dim))
+        flat_idx = mx.reshape(indices, (-1,))
+        k_neighbors = mx.take(k_flat, flat_idx, axis=1)
+        k_neighbors = mx.reshape(k_neighbors, (batch, out_h, out_w, area, heads, head_dim))
+        k_neighbors = mx.transpose(k_neighbors, axes=(0, 1, 2, 4, 3, 5))
+
+        grad_attn_masked = mx.where(valid_mask, grad_attn, mx.zeros_like(grad_attn))
+        grad_q_sel = scale_value * mx.sum(grad_attn_masked[..., None] * k_neighbors, axis=-2)
+
+        grad_k_neighbors = scale_value * grad_attn_masked[..., None] * q_sel[..., None, :]
+        grad_k_neighbors = mx.reshape(grad_k_neighbors, (batch, out_h * out_w, heads, area, head_dim))
+        idx_flat = mx.reshape(indices, (out_h * out_w, area))
+        valid_flat = mx.reshape(valid, (out_h * out_w, area))
+        grad_k_flat = _scatter_neighbor_contrib_flat(
+            grad_k_neighbors, idx_flat, valid_flat, flat_spatial
+        )
+        grad_k = mx.reshape(grad_k_flat, (batch, height, width, heads, head_dim))
+
+        idx_h = mx.reshape(qh, (1, out_h, 1, 1, 1))
+        grad_q_h = mx.put_along_axis(
+            mx.zeros((batch, height, out_w, heads, head_dim), dtype=q.dtype),
+            idx_h,
+            _cast(grad_q_sel, q.dtype),
+            axis=1,
+        )
+        idx_w = mx.reshape(qw, (1, 1, out_w, 1, 1))
+        grad_q = mx.put_along_axis(
+            mx.zeros((batch, height, width, heads, head_dim), dtype=q.dtype),
+            idx_w,
+            grad_q_h,
+            axis=2,
+        )
+        return grad_q, _cast(grad_k, k.dtype)
 
     return _with_grad_fallback(
         _run,
@@ -905,12 +1049,44 @@ def na2d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
     if not is_available() or not _supports_2d_split(kernel_size, stride, dilation, is_causal):
         return pure.na2d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal)
 
-    def _run():
-        def _loss(attn_in, v_in):
-            out = na2d_av_forward(attn_in, v_in, kernel_size, stride, dilation, is_causal)
-            return mx.sum(out * grad_out)
+    batch, out_h, out_w, heads, area = attn.shape
+    _, height, width, _, head_dim = v.shape
+    flat_spatial = height * width
+    qh_np = pure._query_positions(height, int(stride[0]))
+    qw_np = pure._query_positions(width, int(stride[1]))
+    if out_h != len(qh_np) or out_w != len(qw_np):
+        return pure.na2d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal)
+    indices, valid = pure._compute_neighbor_indices_2d(
+        height,
+        width,
+        (int(kernel_size[0]), int(kernel_size[1])),
+        (int(dilation[0]), int(dilation[1])),
+        (bool(is_causal[0]), bool(is_causal[1])),
+        query_h=qh_np,
+        query_w=qw_np,
+    )
+    valid_mask = valid[None, :, :, None, :]
 
-        return mx.grad(_loss, argnums=(0, 1))(attn, v)
+    def _run():
+        v_flat = mx.reshape(v, (batch, flat_spatial, heads, head_dim))
+        flat_idx = mx.reshape(indices, (-1,))
+        v_neighbors = mx.take(v_flat, flat_idx, axis=1)
+        v_neighbors = mx.reshape(v_neighbors, (batch, out_h, out_w, area, heads, head_dim))
+        v_neighbors = mx.transpose(v_neighbors, axes=(0, 1, 2, 4, 3, 5))
+
+        grad_attn = mx.sum(grad_out[..., None, :] * v_neighbors, axis=-1)
+        grad_attn = mx.where(valid_mask, grad_attn, mx.zeros_like(grad_attn))
+
+        attn_masked = mx.where(valid_mask, attn, mx.zeros_like(attn))
+        grad_v_neighbors = attn_masked[..., None] * grad_out[..., None, :]
+        grad_v_neighbors = mx.reshape(grad_v_neighbors, (batch, out_h * out_w, heads, area, head_dim))
+        idx_flat = mx.reshape(indices, (out_h * out_w, area))
+        valid_flat = mx.reshape(valid, (out_h * out_w, area))
+        grad_v_flat = _scatter_neighbor_contrib_flat(
+            grad_v_neighbors, idx_flat, valid_flat, flat_spatial
+        )
+        grad_v = mx.reshape(grad_v_flat, (batch, height, width, heads, head_dim))
+        return _cast(grad_attn, attn.dtype), _cast(grad_v, v.dtype)
 
     return _with_grad_fallback(
         _run,
@@ -922,12 +1098,83 @@ def na3d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
     if not is_available() or not _supports_3d_split(kernel_size, stride, dilation, is_causal):
         return pure.na3d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale)
 
-    def _run():
-        def _loss(q_in, k_in):
-            out = na3d_qk_forward(q_in, k_in, kernel_size, stride, dilation, is_causal, scale)
-            return mx.sum(out * grad_attn)
+    batch, depth, height, width, heads, head_dim = q.shape
+    kd, kh, kw = int(kernel_size[0]), int(kernel_size[1]), int(kernel_size[2])
+    volume = kd * kh * kw
+    sd, sh, sw = int(stride[0]), int(stride[1]), int(stride[2])
+    qd_np = pure._query_positions(depth, sd)
+    qh_np = pure._query_positions(height, sh)
+    qw_np = pure._query_positions(width, sw)
+    out_d = len(qd_np)
+    out_h = len(qh_np)
+    out_w = len(qw_np)
+    qd = mx.array(qd_np, dtype=mx.int32)
+    qh = mx.array(qh_np, dtype=mx.int32)
+    qw = mx.array(qw_np, dtype=mx.int32)
+    indices, valid = pure._compute_neighbor_indices_3d(
+        depth,
+        height,
+        width,
+        (kd, kh, kw),
+        (int(dilation[0]), int(dilation[1]), int(dilation[2])),
+        (bool(is_causal[0]), bool(is_causal[1]), bool(is_causal[2])),
+        query_d=qd_np,
+        query_h=qh_np,
+        query_w=qw_np,
+    )
+    valid_mask = valid[None, :, :, :, None, :]
+    scale_value = (head_dim ** -0.5) if scale is None else float(scale)
+    flat_spatial = depth * height * width
 
-        return mx.grad(_loss, argnums=(0, 1))(q, k)
+    def _run():
+        q_depth = mx.take(q, qd, axis=1)
+        q_rows = mx.take(q_depth, qh, axis=2)
+        q_sel = mx.take(q_rows, qw, axis=3)
+
+        k_flat = mx.reshape(k, (batch, flat_spatial, heads, head_dim))
+        flat_idx = mx.reshape(indices, (-1,))
+        k_neighbors = mx.take(k_flat, flat_idx, axis=1)
+        k_neighbors = mx.reshape(
+            k_neighbors, (batch, out_d, out_h, out_w, volume, heads, head_dim)
+        )
+        k_neighbors = mx.transpose(k_neighbors, axes=(0, 1, 2, 3, 5, 4, 6))
+
+        grad_attn_masked = mx.where(valid_mask, grad_attn, mx.zeros_like(grad_attn))
+        grad_q_sel = scale_value * mx.sum(grad_attn_masked[..., None] * k_neighbors, axis=-2)
+
+        grad_k_neighbors = scale_value * grad_attn_masked[..., None] * q_sel[..., None, :]
+        grad_k_neighbors = mx.reshape(
+            grad_k_neighbors, (batch, out_d * out_h * out_w, heads, volume, head_dim)
+        )
+        idx_flat = mx.reshape(indices, (out_d * out_h * out_w, volume))
+        valid_flat = mx.reshape(valid, (out_d * out_h * out_w, volume))
+        grad_k_flat = _scatter_neighbor_contrib_flat(
+            grad_k_neighbors, idx_flat, valid_flat, flat_spatial
+        )
+        grad_k = mx.reshape(grad_k_flat, (batch, depth, height, width, heads, head_dim))
+
+        idx_d = mx.reshape(qd, (1, out_d, 1, 1, 1, 1))
+        grad_q_d = mx.put_along_axis(
+            mx.zeros((batch, depth, out_h, out_w, heads, head_dim), dtype=q.dtype),
+            idx_d,
+            _cast(grad_q_sel, q.dtype),
+            axis=1,
+        )
+        idx_h = mx.reshape(qh, (1, 1, out_h, 1, 1, 1))
+        grad_q_h = mx.put_along_axis(
+            mx.zeros((batch, depth, height, out_w, heads, head_dim), dtype=q.dtype),
+            idx_h,
+            grad_q_d,
+            axis=2,
+        )
+        idx_w = mx.reshape(qw, (1, 1, 1, out_w, 1, 1))
+        grad_q = mx.put_along_axis(
+            mx.zeros((batch, depth, height, width, heads, head_dim), dtype=q.dtype),
+            idx_w,
+            grad_q_h,
+            axis=3,
+        )
+        return grad_q, _cast(grad_k, k.dtype)
 
     return _with_grad_fallback(
         _run,
@@ -939,12 +1186,51 @@ def na3d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
     if not is_available() or not _supports_3d_split(kernel_size, stride, dilation, is_causal):
         return pure.na3d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal)
 
-    def _run():
-        def _loss(attn_in, v_in):
-            out = na3d_av_forward(attn_in, v_in, kernel_size, stride, dilation, is_causal)
-            return mx.sum(out * grad_out)
+    batch, out_d, out_h, out_w, heads, volume = attn.shape
+    _, depth, height, width, _, head_dim = v.shape
+    flat_spatial = depth * height * width
+    qd_np = pure._query_positions(depth, int(stride[0]))
+    qh_np = pure._query_positions(height, int(stride[1]))
+    qw_np = pure._query_positions(width, int(stride[2]))
+    if out_d != len(qd_np) or out_h != len(qh_np) or out_w != len(qw_np):
+        return pure.na3d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal)
+    indices, valid = pure._compute_neighbor_indices_3d(
+        depth,
+        height,
+        width,
+        (int(kernel_size[0]), int(kernel_size[1]), int(kernel_size[2])),
+        (int(dilation[0]), int(dilation[1]), int(dilation[2])),
+        (bool(is_causal[0]), bool(is_causal[1]), bool(is_causal[2])),
+        query_d=qd_np,
+        query_h=qh_np,
+        query_w=qw_np,
+    )
+    valid_mask = valid[None, :, :, :, None, :]
 
-        return mx.grad(_loss, argnums=(0, 1))(attn, v)
+    def _run():
+        v_flat = mx.reshape(v, (batch, flat_spatial, heads, head_dim))
+        flat_idx = mx.reshape(indices, (-1,))
+        v_neighbors = mx.take(v_flat, flat_idx, axis=1)
+        v_neighbors = mx.reshape(
+            v_neighbors, (batch, out_d, out_h, out_w, volume, heads, head_dim)
+        )
+        v_neighbors = mx.transpose(v_neighbors, axes=(0, 1, 2, 3, 5, 4, 6))
+
+        grad_attn = mx.sum(grad_out[..., None, :] * v_neighbors, axis=-1)
+        grad_attn = mx.where(valid_mask, grad_attn, mx.zeros_like(grad_attn))
+
+        attn_masked = mx.where(valid_mask, attn, mx.zeros_like(attn))
+        grad_v_neighbors = attn_masked[..., None] * grad_out[..., None, :]
+        grad_v_neighbors = mx.reshape(
+            grad_v_neighbors, (batch, out_d * out_h * out_w, heads, volume, head_dim)
+        )
+        idx_flat = mx.reshape(indices, (out_d * out_h * out_w, volume))
+        valid_flat = mx.reshape(valid, (out_d * out_h * out_w, volume))
+        grad_v_flat = _scatter_neighbor_contrib_flat(
+            grad_v_neighbors, idx_flat, valid_flat, flat_spatial
+        )
+        grad_v = mx.reshape(grad_v_flat, (batch, depth, height, width, heads, head_dim))
+        return _cast(grad_attn, attn.dtype), _cast(grad_v, v.dtype)
 
     return _with_grad_fallback(
         _run,
