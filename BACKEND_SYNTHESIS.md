@@ -94,14 +94,15 @@ Observed capabilities:
 6. Added explicit backend capability API:
 7. `/Users/sam/Code/natten-mlx/src/natten_mlx/support_matrix.py`
 8. Hardened backward behavior:
-9. Added explicit backend backward entrypoints for fused and split 1D/2D paths.
-10. Custom VJP now routes to backend backward when available, with pure fallback safety.
-11. Added backend gradient parity coverage (backend vs pure and upstream v0.14 split reference).
-12. Added tests for support matrix API.
+9. Added explicit backend backward entrypoints for fused and split 1D/2D/3D paths.
+10. Added Metal split-backward kernels for all gradient components (`grad_q`, `grad_k`, `grad_attn`, `grad_v`) across 1D/2D/3D.
+11. Custom VJP now routes to backend backward when available, with pure fallback safety.
+12. Added backend gradient parity coverage (backend vs pure and upstream v0.14 split reference).
+13. Added tests for support matrix API.
 
 ### Deliberately Deferred
 
-1. Porting the full experimental backward-kernel suite from old `functional_metal.py` (high complexity and regression risk).
+1. Further performance-tuning of backward kernels (tiling/fusion beyond current per-op kernels).
 2. Directly embedding Torch MPS extension code into MLX package.
 
 ## Current Matrix in This Repo
@@ -137,9 +138,9 @@ Generated on `2026-02-21` using:
 
 | Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal speedup vs pure | nanobind speedup vs pure |
 |---|---:|---:|---:|---:|---:|---:|
-| `na1d_k7_s1_d1_noncausal` | `forward` | 0.790 | 0.189 | 0.192 | 4.17x | 4.12x |
-| `na1d_k7_s1_d1_noncausal` | `backward` | 0.602 | 0.571 | 0.547 | 1.06x | 1.10x |
-| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.620 | 0.696 | 0.692 | 2.33x | 2.34x |
-| `na2d_k7x7_s1_d1_noncausal` | `backward` | 1.934 | 1.910 | 1.910 | 1.01x | 1.01x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.859 | 0.304 | 0.318 | 2.83x | 2.70x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.988 | 0.992 | 0.991 | 1.00x | 1.00x |
+| `na1d_k7_s1_d1_noncausal` | `forward` | 0.602 | 0.214 | 0.204 | 2.81x | 2.96x |
+| `na1d_k7_s1_d1_noncausal` | `backward` | 0.702 | 0.342 | 0.320 | 2.05x | 2.20x |
+| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.743 | 0.701 | 0.696 | 2.49x | 2.50x |
+| `na2d_k7x7_s1_d1_noncausal` | `backward` | 2.031 | 0.776 | 0.734 | 2.62x | 2.77x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.886 | 0.321 | 0.321 | 2.76x | 2.76x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.994 | 0.401 | 0.403 | 2.48x | 2.47x |

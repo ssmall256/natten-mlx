@@ -60,16 +60,22 @@ def test_compiled_nanobind_extension_symbols_if_built():
     expected = [
         "na1d_forward",
         "na2d_forward",
+        "na3d_forward",
         "na1d_qk_forward",
         "na1d_av_forward",
         "na2d_qk_forward",
         "na2d_av_forward",
+        "na3d_qk_forward",
+        "na3d_av_forward",
         "na1d_backward",
         "na2d_backward",
+        "na3d_backward",
         "na1d_qk_backward",
         "na1d_av_backward",
         "na2d_qk_backward",
         "na2d_av_backward",
+        "na3d_qk_backward",
+        "na3d_av_backward",
     ]
     for name in expected:
         assert hasattr(ext, name), name

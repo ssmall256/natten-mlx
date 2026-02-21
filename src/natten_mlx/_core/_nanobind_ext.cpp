@@ -46,15 +46,21 @@ NB_MODULE(_nanobind_ext, m) {
 
     bind_passthrough(m, "na1d_forward", 8);
     bind_passthrough(m, "na2d_forward", 8);
+    bind_passthrough(m, "na3d_forward", 8);
     bind_passthrough(m, "na1d_qk_forward", 7);
     bind_passthrough(m, "na1d_av_forward", 6);
     bind_passthrough(m, "na2d_qk_forward", 7);
     bind_passthrough(m, "na2d_av_forward", 6);
+    bind_passthrough(m, "na3d_qk_forward", 7);
+    bind_passthrough(m, "na3d_av_forward", 6);
 
     bind_passthrough(m, "na1d_backward", 9);
     bind_passthrough(m, "na2d_backward", 9);
+    bind_passthrough(m, "na3d_backward", 9);
     bind_passthrough(m, "na1d_qk_backward", 8);
     bind_passthrough(m, "na1d_av_backward", 7);
     bind_passthrough(m, "na2d_qk_backward", 8);
     bind_passthrough(m, "na2d_av_backward", 7);
+    bind_passthrough(m, "na3d_qk_backward", 8);
+    bind_passthrough(m, "na3d_av_backward", 7);
 }
