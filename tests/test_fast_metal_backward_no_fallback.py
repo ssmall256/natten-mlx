@@ -173,6 +173,60 @@ def test_fast_metal_na1d_qk_backward_vec4_path_matches_pure_without_fallback(mon
     np.testing.assert_allclose(np.array(gk_f), np.array(gk_p), rtol=1e-5, atol=1e-5)
 
 
+def test_fast_metal_na2d_qk_backward_vec4_path_matches_pure_without_fallback(monkeypatch):
+    if not fast_metal.is_available():
+        pytest.skip("fast_metal unavailable")
+
+    q = mx.random.normal((1, 19, 17, 2, 16))
+    k = mx.random.normal((1, 19, 17, 2, 16))
+    grad_attn = mx.random.normal((1, 10, 6, 2, 25))
+    ks = (5, 5)
+    st = (2, 3)
+    dil = (2, 1)
+    caus = (True, False)
+    scale = 0.33
+
+    gq_p, gk_p = pure.na2d_qk_backward(q, k, grad_attn, ks, st, dil, caus, scale)
+    mx.eval(gq_p, gk_p)
+
+    def _no_fallback(*_args, **_kwargs):
+        raise AssertionError("unexpected fallback to pure.na2d_qk_backward")
+
+    monkeypatch.setattr(pure, "na2d_qk_backward", _no_fallback)
+    gq_f, gk_f = fast_metal.na2d_qk_backward(q, k, grad_attn, ks, st, dil, caus, scale)
+    mx.eval(gq_f, gk_f)
+
+    np.testing.assert_allclose(np.array(gq_f), np.array(gq_p), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(np.array(gk_f), np.array(gk_p), rtol=1e-5, atol=1e-5)
+
+
+def test_fast_metal_na3d_qk_backward_vec4_path_matches_pure_without_fallback(monkeypatch):
+    if not fast_metal.is_available():
+        pytest.skip("fast_metal unavailable")
+
+    q = mx.random.normal((1, 13, 11, 9, 2, 16))
+    k = mx.random.normal((1, 13, 11, 9, 2, 16))
+    grad_attn = mx.random.normal((1, 7, 4, 5, 2, 27))
+    ks = (3, 3, 3)
+    st = (2, 3, 2)
+    dil = (2, 1, 2)
+    caus = (True, False, True)
+    scale = 0.29
+
+    gq_p, gk_p = pure.na3d_qk_backward(q, k, grad_attn, ks, st, dil, caus, scale)
+    mx.eval(gq_p, gk_p)
+
+    def _no_fallback(*_args, **_kwargs):
+        raise AssertionError("unexpected fallback to pure.na3d_qk_backward")
+
+    monkeypatch.setattr(pure, "na3d_qk_backward", _no_fallback)
+    gq_f, gk_f = fast_metal.na3d_qk_backward(q, k, grad_attn, ks, st, dil, caus, scale)
+    mx.eval(gq_f, gk_f)
+
+    np.testing.assert_allclose(np.array(gq_f), np.array(gq_p), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(np.array(gk_f), np.array(gk_p), rtol=1e-5, atol=1e-5)
+
+
 def test_fast_metal_na1d_av_backward_vec4_path_matches_pure_without_fallback(monkeypatch):
     if not fast_metal.is_available():
         pytest.skip("fast_metal unavailable")

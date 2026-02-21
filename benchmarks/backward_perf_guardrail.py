@@ -99,6 +99,12 @@ def _build_cases():
     q1 = mx.random.normal((2, 256, 8, 32))
     k1 = mx.random.normal((2, 256, 8, 32))
     v1 = mx.random.normal((2, 256, 8, 32))
+    q1_decode_causal = mx.random.normal((1, 512, 8, 64))
+    k1_decode_causal = mx.random.normal((1, 512, 8, 64))
+    v1_decode_causal = mx.random.normal((1, 512, 8, 64))
+    q1_decode_long = mx.random.normal((1, 1024, 8, 64))
+    k1_decode_long = mx.random.normal((1, 1024, 8, 64))
+    v1_decode_long = mx.random.normal((1, 1024, 8, 64))
 
     q2 = mx.random.normal((1, 32, 32, 8, 32))
     k2 = mx.random.normal((1, 32, 32, 8, 32))
@@ -142,6 +148,40 @@ def _build_cases():
 
         return mx.grad(loss_fn)(q2)
 
+    def _bw_1d_decode_causal():
+        def loss_fn(q_in):
+            return mx.sum(
+                na1d(
+                    q_in,
+                    k1_decode_causal,
+                    v1_decode_causal,
+                    kernel_size=9,
+                    stride=1,
+                    dilation=2,
+                    is_causal=True,
+                    scale=0.5,
+                )
+            )
+
+        return mx.grad(loss_fn)(q1_decode_causal)
+
+    def _bw_1d_decode_long_noncausal():
+        def loss_fn(q_in):
+            return mx.sum(
+                na1d(
+                    q_in,
+                    k1_decode_long,
+                    v1_decode_long,
+                    kernel_size=7,
+                    stride=1,
+                    dilation=1,
+                    is_causal=False,
+                    scale=0.5,
+                )
+            )
+
+        return mx.grad(loss_fn)(q1_decode_long)
+
     def _bw_3d():
         def loss_fn(q_in):
             return mx.sum(
@@ -161,6 +201,8 @@ def _build_cases():
 
     return [
         {"name": "na1d_k7_s1_d1_noncausal", "backward": _bw_1d},
+        {"name": "na1d_k9_s1_d2_causal_L512_D64", "backward": _bw_1d_decode_causal},
+        {"name": "na1d_k7_s1_d1_noncausal_L1024_D64", "backward": _bw_1d_decode_long_noncausal},
         {"name": "na2d_k7x7_s1_d1_noncausal", "backward": _bw_2d},
         {"name": "na3d_k3x3x3_s1_d1_noncausal", "backward": _bw_3d},
     ]

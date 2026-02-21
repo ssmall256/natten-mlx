@@ -93,6 +93,7 @@ NATTEN_UPSTREAM_PARITY=1 uv run python -m pytest tests/test_upstream_parity.py -
 - Includes benchmark smoke run with JSON artifact upload and non-failing perf warnings.
 - Includes a required backward perf guardrail (fast backends must maintain minimum speedup vs pure).
   - Required CI gate uses sequential median-of-medians aggregation (`--rounds 3`) for stability.
+  - Guardrail covers baseline 1D/2D/3D plus decode-like 1D cases (causal and long non-causal).
 - Local benchmark smoke run:
 
 ```bash
@@ -122,12 +123,12 @@ Median latency table (ms, lower is better):
 
 | Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal speedup vs pure | nanobind speedup vs pure |
 |---|---:|---:|---:|---:|---:|---:|
-| `na1d_k7_s1_d1_noncausal` | `forward` | 0.427 | 0.211 | 0.205 | 2.02x | 2.08x |
-| `na1d_k7_s1_d1_noncausal` | `backward` | 0.483 | 0.333 | 0.335 | 1.45x | 1.44x |
-| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.457 | 0.681 | 0.654 | 2.14x | 2.23x |
-| `na2d_k7x7_s1_d1_noncausal` | `backward` | 1.862 | 0.756 | 0.723 | 2.46x | 2.58x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.819 | 0.321 | 0.315 | 2.56x | 2.60x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.979 | 0.393 | 0.402 | 2.49x | 2.43x |
+| `na1d_k7_s1_d1_noncausal` | `forward` | 0.566 | 0.210 | 0.207 | 2.70x | 2.74x |
+| `na1d_k7_s1_d1_noncausal` | `backward` | 0.634 | 0.313 | 0.297 | 2.03x | 2.13x |
+| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.932 | 0.663 | 0.671 | 2.92x | 2.88x |
+| `na2d_k7x7_s1_d1_noncausal` | `backward` | 2.841 | 0.605 | 0.560 | 4.69x | 5.08x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.960 | 0.312 | 0.298 | 3.08x | 3.23x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 1.059 | 0.371 | 0.354 | 2.85x | 2.99x |
 
 Raw artifacts are written to:
 - `benchmarks/final-perf.json`
