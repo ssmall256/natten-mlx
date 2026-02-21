@@ -31,6 +31,35 @@ def test_fast_metal_na1d_fused_stride_causal_k9_matches_pure_without_fallback(mo
     np.testing.assert_allclose(np.array(out_fast), np.array(out_pure), rtol=1e-5, atol=1e-5)
 
 
+def test_fast_metal_na1d_fused_causal_stride1_uses_causal_kernel_without_fallback(monkeypatch):
+    if not fast_metal.is_available():
+        pytest.skip("fast_metal unavailable")
+
+    q = mx.random.normal((1, 128, 4, 32))
+    k = mx.random.normal((1, 128, 4, 32))
+    v = mx.random.normal((1, 128, 4, 32))
+    ks = (7,)
+    st = (1,)
+    dil = (1,)
+    caus = (True,)
+    scale = 0.5
+
+    out_pure = pure.na1d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_pure)
+
+    def _no_fallback(*_args, **_kwargs):
+        raise AssertionError("unexpected fallback to pure.na1d_forward")
+
+    def _unexpected_noncausal_kernel(*_args, **_kwargs):
+        raise AssertionError("unexpected non-causal fused kernel path")
+
+    monkeypatch.setattr(pure, "na1d_forward", _no_fallback)
+    monkeypatch.setattr(fast_metal, "_get_1d_fused_kernel", _unexpected_noncausal_kernel)
+    out_fast = fast_metal.na1d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_fast)
+    np.testing.assert_allclose(np.array(out_fast), np.array(out_pure), rtol=1e-5, atol=1e-5)
+
+
 def test_fast_metal_na2d_fused_stride_causal_k9_matches_pure_without_fallback(monkeypatch):
     if not fast_metal.is_available():
         pytest.skip("fast_metal unavailable")
@@ -51,6 +80,35 @@ def test_fast_metal_na2d_fused_stride_causal_k9_matches_pure_without_fallback(mo
         raise AssertionError("unexpected fallback to pure.na2d_forward")
 
     monkeypatch.setattr(pure, "na2d_forward", _no_fallback)
+    out_fast = fast_metal.na2d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_fast)
+    np.testing.assert_allclose(np.array(out_fast), np.array(out_pure), rtol=1e-5, atol=1e-5)
+
+
+def test_fast_metal_na2d_fused_causal_uses_causal_kernel_without_fallback(monkeypatch):
+    if not fast_metal.is_available():
+        pytest.skip("fast_metal unavailable")
+
+    q = mx.random.normal((1, 24, 24, 4, 16))
+    k = mx.random.normal((1, 24, 24, 4, 16))
+    v = mx.random.normal((1, 24, 24, 4, 16))
+    ks = (7, 7)
+    st = (1, 1)
+    dil = (1, 1)
+    caus = (True, False)
+    scale = 0.5
+
+    out_pure = pure.na2d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_pure)
+
+    def _no_fallback(*_args, **_kwargs):
+        raise AssertionError("unexpected fallback to pure.na2d_forward")
+
+    def _unexpected_noncausal_kernel(*_args, **_kwargs):
+        raise AssertionError("unexpected non-causal 2d fused kernel path")
+
+    monkeypatch.setattr(pure, "na2d_forward", _no_fallback)
+    monkeypatch.setattr(fast_metal, "_get_2d_fused_kernel", _unexpected_noncausal_kernel)
     out_fast = fast_metal.na2d_forward(q, k, v, ks, st, dil, caus, scale)
     mx.eval(out_fast)
     np.testing.assert_allclose(np.array(out_fast), np.array(out_pure), rtol=1e-5, atol=1e-5)
@@ -79,6 +137,40 @@ def test_fast_metal_na3d_fused_stride_causal_k5_matches_pure_without_fallback(mo
         raise AssertionError("unexpected split path in na3d_forward")
 
     monkeypatch.setattr(pure, "na3d_forward", _no_fallback)
+    monkeypatch.setattr(fast_metal, "na3d_qk_forward", _unexpected_split)
+    monkeypatch.setattr(fast_metal, "na3d_av_forward", _unexpected_split)
+    out_fast = fast_metal.na3d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_fast)
+    np.testing.assert_allclose(np.array(out_fast), np.array(out_pure), rtol=1e-5, atol=1e-5)
+
+
+def test_fast_metal_na3d_fused_causal_uses_causal_kernel_without_fallback(monkeypatch):
+    if not fast_metal.is_available():
+        pytest.skip("fast_metal unavailable")
+
+    q = mx.random.normal((1, 10, 12, 14, 4, 16))
+    k = mx.random.normal((1, 10, 12, 14, 4, 16))
+    v = mx.random.normal((1, 10, 12, 14, 4, 16))
+    ks = (3, 3, 3)
+    st = (1, 1, 1)
+    dil = (1, 1, 1)
+    caus = (True, False, False)
+    scale = 0.5
+
+    out_pure = pure.na3d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_pure)
+
+    def _no_fallback(*_args, **_kwargs):
+        raise AssertionError("unexpected fallback to pure.na3d_forward")
+
+    def _unexpected_noncausal_kernel(*_args, **_kwargs):
+        raise AssertionError("unexpected non-causal 3d fused kernel path")
+
+    def _unexpected_split(*_args, **_kwargs):
+        raise AssertionError("unexpected split path in na3d_forward")
+
+    monkeypatch.setattr(pure, "na3d_forward", _no_fallback)
+    monkeypatch.setattr(fast_metal, "_get_3d_fused_kernel", _unexpected_noncausal_kernel)
     monkeypatch.setattr(fast_metal, "na3d_qk_forward", _unexpected_split)
     monkeypatch.setattr(fast_metal, "na3d_av_forward", _unexpected_split)
     out_fast = fast_metal.na3d_forward(q, k, v, ks, st, dil, caus, scale)

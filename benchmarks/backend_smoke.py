@@ -19,7 +19,7 @@ from pathlib import Path
 
 import mlx.core as mx
 
-from natten_mlx import na1d, na2d, set_backend
+from natten_mlx import na1d, na2d, na3d, set_backend
 
 
 def _stats(times_ms: list[float]) -> dict[str, float]:
@@ -69,6 +69,9 @@ def _build_cases():
     q2 = mx.random.normal((1, 24, 24, 8, 32))
     k2 = mx.random.normal((1, 24, 24, 8, 32))
     v2 = mx.random.normal((1, 24, 24, 8, 32))
+    q3 = mx.random.normal((1, 10, 12, 14, 4, 16))
+    k3 = mx.random.normal((1, 10, 12, 14, 4, 16))
+    v3 = mx.random.normal((1, 10, 12, 14, 4, 16))
 
     return [
         {
@@ -82,6 +85,20 @@ def _build_cases():
                 stride=1,
                 dilation=1,
                 is_causal=False,
+                scale=0.5,
+            ),
+        },
+        {
+            "name": "na1d_fused_k7_causal",
+            "accelerated_expected": True,
+            "fn": lambda: na1d(
+                q1,
+                k1,
+                v1,
+                kernel_size=7,
+                stride=1,
+                dilation=1,
+                is_causal=True,
                 scale=0.5,
             ),
         },
@@ -101,7 +118,7 @@ def _build_cases():
         },
         {
             "name": "na1d_stride2_causal",
-            "accelerated_expected": False,
+            "accelerated_expected": True,
             "fn": lambda: na1d(
                 q1,
                 k1,
@@ -115,7 +132,7 @@ def _build_cases():
         },
         {
             "name": "na2d_stride_causal",
-            "accelerated_expected": False,
+            "accelerated_expected": True,
             "fn": lambda: na2d(
                 q2,
                 k2,
@@ -124,6 +141,20 @@ def _build_cases():
                 stride=(2, 2),
                 dilation=(2, 2),
                 is_causal=(True, False),
+                scale=0.5,
+            ),
+        },
+        {
+            "name": "na3d_fused_k3_causal",
+            "accelerated_expected": True,
+            "fn": lambda: na3d(
+                q3,
+                k3,
+                v3,
+                kernel_size=(3, 3, 3),
+                stride=(1, 1, 1),
+                dilation=(1, 1, 1),
+                is_causal=(True, False, False),
                 scale=0.5,
             ),
         },

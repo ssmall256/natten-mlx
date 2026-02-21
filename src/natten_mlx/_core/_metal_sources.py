@@ -70,6 +70,10 @@ def _volume(kernel_size: int) -> int:
     return kernel_size * kernel_size * kernel_size
 
 
+def _bool_literal(value: bool) -> str:
+    return "true" if value else "false"
+
+
 def source_1d_qk(kernel_size: int) -> str:
     nh = _nh(kernel_size)
     return _HELPERS + f"""
@@ -477,9 +481,32 @@ for (int d = 0; d < dim; d++) {{
 """
 
 
-def source_3d_fused(kernel_size: int) -> str:
+def source_3d_fused(
+    kernel_size: int,
+    *,
+    causal_d: bool | None = None,
+    causal_h: bool | None = None,
+    causal_w: bool | None = None,
+) -> str:
     nh = _nh(kernel_size)
     volume = _volume(kernel_size)
+    if (causal_d is None) != (causal_h is None) or (causal_d is None) != (causal_w is None):
+        raise ValueError("causal_d/causal_h/causal_w must be all None or all booleans")
+    causal_d_decl = (
+        "const bool causal_d = ((int)causal_param[0]) != 0;"
+        if causal_d is None
+        else f"const bool causal_d = {_bool_literal(causal_d)};"
+    )
+    causal_h_decl = (
+        "const bool causal_h = ((int)causal_param[1]) != 0;"
+        if causal_h is None
+        else f"const bool causal_h = {_bool_literal(causal_h)};"
+    )
+    causal_w_decl = (
+        "const bool causal_w = ((int)causal_param[2]) != 0;"
+        if causal_w is None
+        else f"const bool causal_w = {_bool_literal(causal_w)};"
+    )
     return _HELPERS + f"""
 uint3 gid = thread_position_in_grid;
 const int batch_size = query_shape[0];
@@ -497,9 +524,9 @@ const int out_width = (width + stride_w - 1) / stride_w;
 const int dilation_d = (int)dilation_param[0];
 const int dilation_h = (int)dilation_param[1];
 const int dilation_w = (int)dilation_param[2];
-const bool causal_d = ((int)causal_param[0]) != 0;
-const bool causal_h = ((int)causal_param[1]) != 0;
-const bool causal_w = ((int)causal_param[2]) != 0;
+{causal_d_decl}
+{causal_h_decl}
+{causal_w_decl}
 const float scale = scale_param[0];
 const int K = {kernel_size};
 const int NH = {nh};
@@ -609,6 +636,15 @@ for (int d = 0; d < dim; d++) {{
 """
 
 
+def source_3d_fused_causal(kernel_size: int, causal_d: bool, causal_h: bool, causal_w: bool) -> str:
+    return source_3d_fused(
+        kernel_size,
+        causal_d=causal_d,
+        causal_h=causal_h,
+        causal_w=causal_w,
+    )
+
+
 def source_1d_fused(kernel_size: int) -> str:
     nh = _nh(kernel_size)
     return _HELPERS + f"""
@@ -690,9 +726,91 @@ for (int d = 0; d < dim; d++) {{
 """
 
 
-def source_2d_fused(kernel_size: int) -> str:
+def source_1d_fused_causal(kernel_size: int) -> str:
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int length = query_shape[2];
+const int dim = query_shape[3];
+const int stride = (int)stride_param[0];
+const int out_length = (length + stride - 1) / stride;
+const int dilation = (int)dilation_param[0];
+const float scale = scale_param[0];
+const int K = {kernel_size};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int i_out = gid.x;
+if (b >= batch_size || h >= heads || i_out >= out_length) return;
+int i = i_out * stride;
+if (i >= length) return;
+
+float logits[K];
+float probs[K];
+
+float max_logit = -INFINITY;
+int anchor = i - (K - 1) * dilation;
+for (int ki = 0; ki < K; ki++) {{
+    int key_i = anchor + ki * dilation;
+    float score = -INFINITY;
+    if (key_i >= 0) {{
+        float sum = 0.0f;
+        for (int d = 0; d < dim; d++) {{
+            int q_idx = (((b * heads + h) * length + i) * dim + d);
+            int k_idx = (((b * heads + h) * length + key_i) * dim + d);
+            sum += query[q_idx] * key[k_idx];
+        }}
+        score = sum * scale;
+    }}
+    logits[ki] = score;
+    max_logit = fmax(max_logit, score);
+}}
+
+float denom = 0.0f;
+for (int ki = 0; ki < K; ki++) {{
+    float p = exp(logits[ki] - max_logit);
+    probs[ki] = p;
+    denom += p;
+}}
+float inv_denom = denom > 0.0f ? 1.0f / denom : 0.0f;
+
+for (int d = 0; d < dim; d++) {{
+    float out_sum = 0.0f;
+    for (int ki = 0; ki < K; ki++) {{
+        int key_i = anchor + ki * dilation;
+        if (key_i >= 0) {{
+            float w = probs[ki] * inv_denom;
+            int v_idx = (((b * heads + h) * length + key_i) * dim + d);
+            out_sum += w * value[v_idx];
+        }}
+    }}
+    int out_idx = (((b * heads + h) * out_length + i_out) * dim + d);
+    out[out_idx] = out_sum;
+}}
+"""
+
+
+def source_2d_fused(
+    kernel_size: int,
+    *,
+    causal_h: bool | None = None,
+    causal_w: bool | None = None,
+) -> str:
     nh = _nh(kernel_size)
     area = _area(kernel_size)
+    if (causal_h is None) != (causal_w is None):
+        raise ValueError("causal_h/causal_w must both be None or both booleans")
+    causal_h_decl = (
+        "const bool causal_h = ((int)causal_param[0]) != 0;"
+        if causal_h is None
+        else f"const bool causal_h = {_bool_literal(causal_h)};"
+    )
+    causal_w_decl = (
+        "const bool causal_w = ((int)causal_param[1]) != 0;"
+        if causal_w is None
+        else f"const bool causal_w = {_bool_literal(causal_w)};"
+    )
     return _HELPERS + f"""
 uint3 gid = thread_position_in_grid;
 const int batch_size = query_shape[0];
@@ -706,8 +824,8 @@ const int out_height = (height + stride_h - 1) / stride_h;
 const int out_width = (width + stride_w - 1) / stride_w;
 const int dilation_h = (int)dilation_param[0];
 const int dilation_w = (int)dilation_param[1];
-const bool causal_h = ((int)causal_param[0]) != 0;
-const bool causal_w = ((int)causal_param[1]) != 0;
+{causal_h_decl}
+{causal_w_decl}
 const float scale = scale_param[0];
 const int K = {kernel_size};
 const int NH = {nh};
@@ -796,6 +914,10 @@ for (int d = 0; d < dim; d++) {{
     out[out_idx] = out_sum;
 }}
 """
+
+
+def source_2d_fused_causal(kernel_size: int, causal_h: bool, causal_w: bool) -> str:
+    return source_2d_fused(kernel_size, causal_h=causal_h, causal_w=causal_w)
 
 
 def source_1d_qk_backward_k(kernel_size: int) -> str:
