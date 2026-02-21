@@ -248,3 +248,153 @@ for (int d = 0; d < dim; d++) {{
     out[out_idx] = sum;
 }}
 """
+
+
+def source_1d_fused(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int length = query_shape[2];
+const int dim = query_shape[3];
+const int dilation = (int)dilation_param[0];
+const float scale = scale_param[0];
+const int K = {kernel_size};
+const int NH = {nh};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int i = gid.x;
+if (b >= batch_size || h >= heads || i >= length) return;
+
+int ni, ei;
+NATTEN_GET_WINDOW_START(ni, i, length, K, NH, dilation);
+NATTEN_GET_WINDOW_END(ei, ni, length, K, dilation);
+
+float logits[K];
+float probs[K];
+int key_pos[K];
+
+float max_logit = -INFINITY;
+for (int ki = 0; ki < K; ki++) {{
+    int key_i = ni + ki * dilation;
+    key_pos[ki] = key_i;
+    float score = -INFINITY;
+    if (key_i >= 0 && key_i < ei) {{
+        float sum = 0.0f;
+        for (int d = 0; d < dim; d++) {{
+            int q_idx = (((b * heads + h) * length + i) * dim + d);
+            int k_idx = (((b * heads + h) * length + key_i) * dim + d);
+            sum += query[q_idx] * key[k_idx];
+        }}
+        score = sum * scale;
+    }}
+    logits[ki] = score;
+    max_logit = fmax(max_logit, score);
+}}
+
+float denom = 0.0f;
+for (int ki = 0; ki < K; ki++) {{
+    float p = exp(logits[ki] - max_logit);
+    probs[ki] = p;
+    denom += p;
+}}
+float inv_denom = denom > 0.0f ? 1.0f / denom : 0.0f;
+
+for (int d = 0; d < dim; d++) {{
+    float out_sum = 0.0f;
+    for (int ki = 0; ki < K; ki++) {{
+        int key_i = key_pos[ki];
+        if (key_i >= 0 && key_i < ei) {{
+            float w = probs[ki] * inv_denom;
+            int v_idx = (((b * heads + h) * length + key_i) * dim + d);
+            out_sum += w * value[v_idx];
+        }}
+    }}
+    int out_idx = (((b * heads + h) * length + i) * dim + d);
+    out[out_idx] = out_sum;
+}}
+"""
+
+
+def source_2d_fused(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    area = _area(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int height = query_shape[2];
+const int width = query_shape[3];
+const int dim = query_shape[4];
+const int dilation = (int)dilation_param[0];
+const float scale = scale_param[0];
+const int K = {kernel_size};
+const int NH = {nh};
+const int L = {area};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int i = gid.y;
+int j = gid.x;
+if (b >= batch_size || h >= heads || i >= height || j >= width) return;
+
+int ni, nj, ei, ej;
+NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation);
+NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation);
+NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation);
+NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation);
+
+float logits[L];
+float probs[L];
+int key_i_arr[L];
+int key_j_arr[L];
+
+float max_logit = -INFINITY;
+int neighbor_idx = 0;
+for (int ki = 0; ki < K; ki++) {{
+    for (int kj = 0; kj < K; kj++) {{
+        int key_i = ni + ki * dilation;
+        int key_j = nj + kj * dilation;
+        key_i_arr[neighbor_idx] = key_i;
+        key_j_arr[neighbor_idx] = key_j;
+        float score = -INFINITY;
+        if (key_i >= 0 && key_i < ei && key_j >= 0 && key_j < ej) {{
+            float sum = 0.0f;
+            for (int d = 0; d < dim; d++) {{
+                int q_idx = (((b * heads + h) * height + i) * width + j) * dim + d;
+                int k_idx = (((b * heads + h) * height + key_i) * width + key_j) * dim + d;
+                sum += query[q_idx] * key[k_idx];
+            }}
+            score = sum * scale;
+        }}
+        logits[neighbor_idx] = score;
+        max_logit = fmax(max_logit, score);
+        neighbor_idx++;
+    }}
+}}
+
+float denom = 0.0f;
+for (int n = 0; n < L; n++) {{
+    float p = exp(logits[n] - max_logit);
+    probs[n] = p;
+    denom += p;
+}}
+float inv_denom = denom > 0.0f ? 1.0f / denom : 0.0f;
+
+for (int d = 0; d < dim; d++) {{
+    float out_sum = 0.0f;
+    for (int n = 0; n < L; n++) {{
+        int key_i = key_i_arr[n];
+        int key_j = key_j_arr[n];
+        if (key_i >= 0 && key_i < ei && key_j >= 0 && key_j < ej) {{
+            float w = probs[n] * inv_denom;
+            int v_idx = (((b * heads + h) * height + key_i) * width + key_j) * dim + d;
+            out_sum += w * value[v_idx];
+        }}
+    }}
+    int out_idx = (((b * heads + h) * height + i) * width + j) * dim + d;
+    out[out_idx] = out_sum;
+}}
+"""

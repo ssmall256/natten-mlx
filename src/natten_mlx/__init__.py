@@ -5,6 +5,7 @@ from __future__ import annotations
 from natten_mlx._core import fast_metal, nanobind, ops
 from natten_mlx.functional import na1d, na1d_av, na1d_qk, na2d, na2d_av, na2d_qk
 from natten_mlx.nn import NeighborhoodAttention1D, NeighborhoodAttention2D
+from natten_mlx.support_matrix import get_support_matrix
 from natten_mlx.version import __version__
 
 
@@ -38,4 +39,5 @@ __all__ = [
     "has_nanobind",
     "get_backend",
     "set_backend",
+    "get_support_matrix",
 ]

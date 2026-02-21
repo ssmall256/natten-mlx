@@ -8,7 +8,7 @@
 - `mlx.nn.Module` wrappers for `NeighborhoodAttention1D` and `NeighborhoodAttention2D`.
 - Backend tiers with runtime dispatch:
   - Tier 0: pure MLX (implemented)
-  - Tier 1: fast Metal kernels (implemented for common split/fused paths, with pure fallback)
+  - Tier 1: fast Metal kernels (fused + split forward paths with pure fallback)
   - Tier 2: nanobind/pure-Metal extension adapter (loads optional extension when installed, otherwise falls back)
 - Compatibility shims for historical NATTEN API eras (`v014`, `v015`, `v017`, `v020`).
 
@@ -73,10 +73,26 @@ NATTEN_UPSTREAM_PARITY=1 uv run python -m pytest tests/test_upstream_parity.py -
 - Use `natten-mlx` for MLX-native projects.
 - Use `natten-mps` for PyTorch + MPS projects.
 
+## Support Matrix
+
+```python
+import natten_mlx
+print(natten_mlx.get_support_matrix())
+```
+
+Current design targets three tiers:
+- Metal kernels (via optional extension adapter): supported through `nanobind` adapter if installed, otherwise pure fallback.
+- MLX fast Metal kernels: fused and split forward paths for common configurations, with automatic fallback.
+- Pure MLX: full semantic coverage baseline.
+
+Audit provenance for this synthesis: `BACKEND_SYNTHESIS.md`.
+
+Backward support for end-to-end `na1d` / `na2d` is preserved across backends by using pure-semantic custom VJP when accelerated backends are active.
+
 ## Limitations
 
 - No 3D neighborhood attention yet.
-- Fast Metal acceleration currently targets non-causal, stride-1, square K in `{3,5,7}`; other configurations use pure backend for correctness.
+- Fast Metal fused acceleration currently targets non-causal, stride-1, K in `{3,5,7}` (2D additionally requires square kernel and equal dilations). Other configurations use pure backend for correctness.
 - MLX lazy evaluation applies; this package does not force evaluation.
 
 ## License

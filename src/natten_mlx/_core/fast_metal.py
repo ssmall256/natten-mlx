@@ -7,7 +7,14 @@ from collections.abc import Callable
 import mlx.core as mx
 
 from . import pure
-from ._metal_sources import source_1d_av, source_1d_qk, source_2d_av, source_2d_qk
+from ._metal_sources import (
+    source_1d_av,
+    source_1d_fused,
+    source_1d_qk,
+    source_2d_av,
+    source_2d_fused,
+    source_2d_qk,
+)
 
 _SUPPORTED_KERNELS = {3, 5, 7}
 _KERNEL_BUILD_FAILED = False
@@ -15,6 +22,8 @@ _QK_1D_KERNELS: dict[int, Callable] = {}
 _AV_1D_KERNELS: dict[int, Callable] = {}
 _QK_2D_KERNELS: dict[int, Callable] = {}
 _AV_2D_KERNELS: dict[int, Callable] = {}
+_FUSED_1D_KERNELS: dict[int, Callable] = {}
+_FUSED_2D_KERNELS: dict[int, Callable] = {}
 _RPB_1D_CACHE: dict[tuple[int, int], mx.array] = {}
 _RPB_2D_CACHE: dict[tuple[int, int], mx.array] = {}
 
@@ -119,6 +128,30 @@ def _get_2d_av_kernel(kernel_size: int):
     return _AV_2D_KERNELS[kernel_size]
 
 
+def _get_1d_fused_kernel(kernel_size: int):
+    if kernel_size not in _FUSED_1D_KERNELS:
+        _FUSED_1D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na1d_fused_k{kernel_size}",
+            input_names=["query", "key", "value", "dilation_param", "scale_param"],
+            output_names=["out"],
+            source=source_1d_fused(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _FUSED_1D_KERNELS[kernel_size]
+
+
+def _get_2d_fused_kernel(kernel_size: int):
+    if kernel_size not in _FUSED_2D_KERNELS:
+        _FUSED_2D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na2d_fused_k{kernel_size}",
+            input_names=["query", "key", "value", "dilation_param", "scale_param"],
+            output_names=["out"],
+            source=source_2d_fused(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _FUSED_2D_KERNELS[kernel_size]
+
+
 def _supports_1d(kernel_size, stride, is_causal) -> bool:
     return (
         int(kernel_size[0]) in _SUPPORTED_KERNELS
@@ -151,17 +184,61 @@ def _with_fallback(fn, fallback):
 def na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
     if not is_available() or not _supports_1d(kernel_size, stride, is_causal):
         return pure.na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
-    logits = na1d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale)
-    attn = mx.softmax(logits, axis=-1)
-    return na1d_av_forward(attn, v, kernel_size, stride, dilation, is_causal)
+    batch, length, heads, _ = q.shape
+    ksize = int(kernel_size[0])
+    dil = int(dilation[0])
+    scale_value = (q.shape[-1] ** -0.5) if scale is None else float(scale)
+
+    def _run():
+        kernel = _get_1d_fused_kernel(ksize)
+        q_m = _to_metal_1d(mx.astype(q, mx.float32))
+        k_m = _to_metal_1d(mx.astype(k, mx.float32))
+        v_m = _to_metal_1d(mx.astype(v, mx.float32))
+        dilation_param = mx.array([dil], dtype=mx.int32)
+        scale_param = mx.array([scale_value], dtype=mx.float32)
+        out = kernel(
+            inputs=[q_m, k_m, v_m, dilation_param, scale_param],
+            grid=(length, 1, batch * heads),
+            threadgroup=_threadgroup_1d(length),
+            output_shapes=[(batch, heads, length, q.shape[-1])],
+            output_dtypes=[mx.float32],
+        )[0]
+        return mx.astype(_from_metal_1d(out), q.dtype)
+
+    return _with_fallback(
+        _run,
+        lambda: pure.na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale),
+    )
 
 
 def na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
     if not is_available() or not _supports_2d(kernel_size, stride, dilation, is_causal):
         return pure.na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
-    logits = na2d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale)
-    attn = mx.softmax(logits, axis=-1)
-    return na2d_av_forward(attn, v, kernel_size, stride, dilation, is_causal)
+    batch, height, width, heads, _ = q.shape
+    ksize = int(kernel_size[0])
+    dil = int(dilation[0])
+    scale_value = (q.shape[-1] ** -0.5) if scale is None else float(scale)
+
+    def _run():
+        kernel = _get_2d_fused_kernel(ksize)
+        q_m = _to_metal_2d(mx.astype(q, mx.float32))
+        k_m = _to_metal_2d(mx.astype(k, mx.float32))
+        v_m = _to_metal_2d(mx.astype(v, mx.float32))
+        dilation_param = mx.array([dil], dtype=mx.int32)
+        scale_param = mx.array([scale_value], dtype=mx.float32)
+        out = kernel(
+            inputs=[q_m, k_m, v_m, dilation_param, scale_param],
+            grid=(width, height, batch * heads),
+            threadgroup=_threadgroup_2d(height, width),
+            output_shapes=[(batch, heads, height, width, q.shape[-1])],
+            output_dtypes=[mx.float32],
+        )[0]
+        return mx.astype(_from_metal_2d(out), q.dtype)
+
+    return _with_fallback(
+        _run,
+        lambda: pure.na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale),
+    )
 
 
 def na1d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):

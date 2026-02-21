@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import mlx.core as mx
 
-from natten_mlx._core import ops
+from natten_mlx._core import ops, pure
 
 
 if hasattr(mx, "custom_function"):
@@ -36,7 +36,9 @@ if hasattr(mx, "custom_function"):
         q, k, v, kernel_size_tuple, stride_tuple, dilation_tuple, is_causal_tuple, scale_float = primals
 
         def forward_fn(q_in, k_in, v_in):
-            return ops.na1d_forward(
+            backend_name = ops.get_backend()
+            fn = pure.na1d_forward if backend_name != "pure" else ops.na1d_forward
+            return fn(
                 q_in,
                 k_in,
                 v_in,
