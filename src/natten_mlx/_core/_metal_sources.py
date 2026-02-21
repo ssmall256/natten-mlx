@@ -175,7 +175,8 @@ const int heads = query_shape[1];
 const int height = query_shape[2];
 const int width = query_shape[3];
 const int dim = query_shape[4];
-const int dilation = (int)dilation_param[0];
+const int dilation_h = (int)dilation_param[0];
+const int dilation_w = (int)dilation_param[1];
 const bool causal_h = ((int)causal_param[0]) != 0;
 const bool causal_w = ((int)causal_param[1]) != 0;
 const int K = {kernel_size};
@@ -195,21 +196,21 @@ int ej = width;
 int pi = NH;
 int pj = NH;
 if (!causal_h) {{
-    NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation);
-    NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation);
-    NATTEN_GET_PB_START(pi, i, height, K, NH, dilation);
+    NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation_h);
+    NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation_h);
+    NATTEN_GET_PB_START(pi, i, height, K, NH, dilation_h);
 }}
 if (!causal_w) {{
-    NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation);
-    NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation);
-    NATTEN_GET_PB_START(pj, j, width, K, NH, dilation);
+    NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation_w);
+    NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
+    NATTEN_GET_PB_START(pj, j, width, K, NH, dilation_w);
 }}
 
 int neighbor_idx = 0;
 for (int ki = 0; ki < K; ki++) {{
     for (int kj = 0; kj < K; kj++) {{
-        int key_i = (causal_h ? (i - (K - 1) * dilation) : ni) + ki * dilation;
-        int key_j = (causal_w ? (j - (K - 1) * dilation) : nj) + kj * dilation;
+        int key_i = (causal_h ? (i - (K - 1) * dilation_h) : ni) + ki * dilation_h;
+        int key_j = (causal_w ? (j - (K - 1) * dilation_w) : nj) + kj * dilation_w;
         float score;
         bool valid_i = causal_h
             ? (key_i >= 0 && key_i <= i && key_i < height)
@@ -248,7 +249,8 @@ const int heads = attention_probs_shape[1];
 const int height = attention_probs_shape[2];
 const int width = attention_probs_shape[3];
 const int dim = value_shape[4];
-const int dilation = (int)dilation_param[0];
+const int dilation_h = (int)dilation_param[0];
+const int dilation_w = (int)dilation_param[1];
 const bool causal_h = ((int)causal_param[0]) != 0;
 const bool causal_w = ((int)causal_param[1]) != 0;
 const int K = {kernel_size};
@@ -266,12 +268,12 @@ int nj = 0;
 int ei = height;
 int ej = width;
 if (!causal_h) {{
-    NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation);
-    NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation);
+    NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation_h);
+    NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation_h);
 }}
 if (!causal_w) {{
-    NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation);
-    NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation);
+    NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation_w);
+    NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
 }}
 
 for (int d = 0; d < dim; d++) {{
@@ -279,8 +281,8 @@ for (int d = 0; d < dim; d++) {{
     int neighbor_idx = 0;
     for (int ki = 0; ki < K; ki++) {{
         for (int kj = 0; kj < K; kj++) {{
-            int val_i = (causal_h ? (i - (K - 1) * dilation) : ni) + ki * dilation;
-            int val_j = (causal_w ? (j - (K - 1) * dilation) : nj) + kj * dilation;
+            int val_i = (causal_h ? (i - (K - 1) * dilation_h) : ni) + ki * dilation_h;
+            int val_j = (causal_w ? (j - (K - 1) * dilation_w) : nj) + kj * dilation_w;
             bool valid_i = causal_h
                 ? (val_i >= 0 && val_i <= i && val_i < height)
                 : (val_i >= 0 && val_i < ei);
@@ -312,7 +314,9 @@ const int depth = query_shape[2];
 const int height = query_shape[3];
 const int width = query_shape[4];
 const int dim = query_shape[5];
-const int dilation = (int)dilation_param[0];
+const int dilation_d = (int)dilation_param[0];
+const int dilation_h = (int)dilation_param[1];
+const int dilation_w = (int)dilation_param[2];
 const bool causal_d = ((int)causal_param[0]) != 0;
 const bool causal_h = ((int)causal_param[1]) != 0;
 const bool causal_w = ((int)causal_param[2]) != 0;
@@ -338,28 +342,28 @@ int pz = NH;
 int pi = NH;
 int pj = NH;
 if (!causal_d) {{
-    NATTEN_GET_WINDOW_START(nz, z, depth, K, NH, dilation);
-    NATTEN_GET_WINDOW_END(ez, nz, depth, K, dilation);
-    NATTEN_GET_PB_START(pz, z, depth, K, NH, dilation);
+    NATTEN_GET_WINDOW_START(nz, z, depth, K, NH, dilation_d);
+    NATTEN_GET_WINDOW_END(ez, nz, depth, K, dilation_d);
+    NATTEN_GET_PB_START(pz, z, depth, K, NH, dilation_d);
 }}
 if (!causal_h) {{
-    NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation);
-    NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation);
-    NATTEN_GET_PB_START(pi, i, height, K, NH, dilation);
+    NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation_h);
+    NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation_h);
+    NATTEN_GET_PB_START(pi, i, height, K, NH, dilation_h);
 }}
 if (!causal_w) {{
-    NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation);
-    NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation);
-    NATTEN_GET_PB_START(pj, j, width, K, NH, dilation);
+    NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation_w);
+    NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
+    NATTEN_GET_PB_START(pj, j, width, K, NH, dilation_w);
 }}
 
 int neighbor_idx = 0;
 for (int kz = 0; kz < K; kz++) {{
     for (int ki = 0; ki < K; ki++) {{
         for (int kj = 0; kj < K; kj++) {{
-            int key_z = (causal_d ? (z - (K - 1) * dilation) : nz) + kz * dilation;
-            int key_i = (causal_h ? (i - (K - 1) * dilation) : ni) + ki * dilation;
-            int key_j = (causal_w ? (j - (K - 1) * dilation) : nj) + kj * dilation;
+            int key_z = (causal_d ? (z - (K - 1) * dilation_d) : nz) + kz * dilation_d;
+            int key_i = (causal_h ? (i - (K - 1) * dilation_h) : ni) + ki * dilation_h;
+            int key_j = (causal_w ? (j - (K - 1) * dilation_w) : nj) + kj * dilation_w;
             float score;
             bool valid_z = causal_d
                 ? (key_z >= 0 && key_z <= z && key_z < depth)
@@ -403,7 +407,9 @@ const int depth = attention_probs_shape[2];
 const int height = attention_probs_shape[3];
 const int width = attention_probs_shape[4];
 const int dim = value_shape[5];
-const int dilation = (int)dilation_param[0];
+const int dilation_d = (int)dilation_param[0];
+const int dilation_h = (int)dilation_param[1];
+const int dilation_w = (int)dilation_param[2];
 const bool causal_d = ((int)causal_param[0]) != 0;
 const bool causal_h = ((int)causal_param[1]) != 0;
 const bool causal_w = ((int)causal_param[2]) != 0;
@@ -426,16 +432,16 @@ int ez = depth;
 int ei = height;
 int ej = width;
 if (!causal_d) {{
-    NATTEN_GET_WINDOW_START(nz, z, depth, K, NH, dilation);
-    NATTEN_GET_WINDOW_END(ez, nz, depth, K, dilation);
+    NATTEN_GET_WINDOW_START(nz, z, depth, K, NH, dilation_d);
+    NATTEN_GET_WINDOW_END(ez, nz, depth, K, dilation_d);
 }}
 if (!causal_h) {{
-    NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation);
-    NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation);
+    NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation_h);
+    NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation_h);
 }}
 if (!causal_w) {{
-    NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation);
-    NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation);
+    NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation_w);
+    NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
 }}
 
 for (int d = 0; d < dim; d++) {{
@@ -444,9 +450,9 @@ for (int d = 0; d < dim; d++) {{
     for (int kz = 0; kz < K; kz++) {{
         for (int ki = 0; ki < K; ki++) {{
             for (int kj = 0; kj < K; kj++) {{
-                int val_z = (causal_d ? (z - (K - 1) * dilation) : nz) + kz * dilation;
-                int val_i = (causal_h ? (i - (K - 1) * dilation) : ni) + ki * dilation;
-                int val_j = (causal_w ? (j - (K - 1) * dilation) : nj) + kj * dilation;
+                int val_z = (causal_d ? (z - (K - 1) * dilation_d) : nz) + kz * dilation_d;
+                int val_i = (causal_h ? (i - (K - 1) * dilation_h) : ni) + ki * dilation_h;
+                int val_j = (causal_w ? (j - (K - 1) * dilation_w) : nj) + kj * dilation_w;
                 bool valid_z = causal_d
                     ? (val_z >= 0 && val_z <= z && val_z < depth)
                     : (val_z >= 0 && val_z < ez);
@@ -467,6 +473,138 @@ for (int d = 0; d < dim; d++) {{
     }}
     int out_idx = ((((b * heads + h) * depth + z) * height + i) * width + j) * dim + d;
     out[out_idx] = sum;
+}}
+"""
+
+
+def source_3d_fused(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    volume = _volume(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int depth = query_shape[2];
+const int height = query_shape[3];
+const int width = query_shape[4];
+const int dim = query_shape[5];
+const int stride_d = (int)stride_param[0];
+const int stride_h = (int)stride_param[1];
+const int stride_w = (int)stride_param[2];
+const int out_depth = (depth + stride_d - 1) / stride_d;
+const int out_height = (height + stride_h - 1) / stride_h;
+const int out_width = (width + stride_w - 1) / stride_w;
+const int dilation_d = (int)dilation_param[0];
+const int dilation_h = (int)dilation_param[1];
+const int dilation_w = (int)dilation_param[2];
+const bool causal_d = ((int)causal_param[0]) != 0;
+const bool causal_h = ((int)causal_param[1]) != 0;
+const bool causal_w = ((int)causal_param[2]) != 0;
+const float scale = scale_param[0];
+const int K = {kernel_size};
+const int NH = {nh};
+const int L = {volume};
+
+int out_z = gid.z % out_depth;
+int bh = gid.z / out_depth;
+int b = bh / heads;
+int h = bh % heads;
+int out_i = gid.y;
+int out_j = gid.x;
+if (b >= batch_size || h >= heads || out_z >= out_depth || out_i >= out_height || out_j >= out_width) return;
+
+int z = out_z * stride_d;
+int i = out_i * stride_h;
+int j = out_j * stride_w;
+if (z >= depth || i >= height || j >= width) return;
+
+int nz = 0;
+int ni = 0;
+int nj = 0;
+int ez = depth;
+int ei = height;
+int ej = width;
+if (!causal_d) {{
+    NATTEN_GET_WINDOW_START(nz, z, depth, K, NH, dilation_d);
+    NATTEN_GET_WINDOW_END(ez, nz, depth, K, dilation_d);
+}}
+if (!causal_h) {{
+    NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation_h);
+    NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation_h);
+}}
+if (!causal_w) {{
+    NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation_w);
+    NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
+}}
+
+float logits[L];
+float probs[L];
+int key_z_arr[L];
+int key_i_arr[L];
+int key_j_arr[L];
+bool key_valid_arr[L];
+
+float max_logit = -INFINITY;
+int neighbor_idx = 0;
+for (int kz = 0; kz < K; kz++) {{
+    for (int ki = 0; ki < K; ki++) {{
+        for (int kj = 0; kj < K; kj++) {{
+            int key_z = (causal_d ? (z - (K - 1) * dilation_d) : nz) + kz * dilation_d;
+            int key_i = (causal_h ? (i - (K - 1) * dilation_h) : ni) + ki * dilation_h;
+            int key_j = (causal_w ? (j - (K - 1) * dilation_w) : nj) + kj * dilation_w;
+            bool valid_z = causal_d
+                ? (key_z >= 0 && key_z <= z && key_z < depth)
+                : (key_z >= 0 && key_z < ez);
+            bool valid_i = causal_h
+                ? (key_i >= 0 && key_i <= i && key_i < height)
+                : (key_i >= 0 && key_i < ei);
+            bool valid_j = causal_w
+                ? (key_j >= 0 && key_j <= j && key_j < width)
+                : (key_j >= 0 && key_j < ej);
+            bool valid = valid_z && valid_i && valid_j;
+            key_z_arr[neighbor_idx] = key_z;
+            key_i_arr[neighbor_idx] = key_i;
+            key_j_arr[neighbor_idx] = key_j;
+            key_valid_arr[neighbor_idx] = valid;
+            float score = -INFINITY;
+            if (valid) {{
+                float sum = 0.0f;
+                for (int d = 0; d < dim; d++) {{
+                    int q_idx = ((((b * heads + h) * depth + z) * height + i) * width + j) * dim + d;
+                    int k_idx = ((((b * heads + h) * depth + key_z) * height + key_i) * width + key_j) * dim + d;
+                    sum += query[q_idx] * key[k_idx];
+                }}
+                score = sum * scale;
+            }}
+            logits[neighbor_idx] = score;
+            max_logit = fmax(max_logit, score);
+            neighbor_idx++;
+        }}
+    }}
+}}
+
+float denom = 0.0f;
+for (int n = 0; n < L; n++) {{
+    float p = exp(logits[n] - max_logit);
+    probs[n] = p;
+    denom += p;
+}}
+float inv_denom = denom > 0.0f ? 1.0f / denom : 0.0f;
+
+for (int d = 0; d < dim; d++) {{
+    float out_sum = 0.0f;
+    for (int n = 0; n < L; n++) {{
+        if (key_valid_arr[n]) {{
+            int key_z = key_z_arr[n];
+            int key_i = key_i_arr[n];
+            int key_j = key_j_arr[n];
+            float w = probs[n] * inv_denom;
+            int v_idx = ((((b * heads + h) * depth + key_z) * height + key_i) * width + key_j) * dim + d;
+            out_sum += w * value[v_idx];
+        }}
+    }}
+    int out_idx = ((((b * heads + h) * out_depth + out_z) * out_height + out_i) * out_width + out_j) * dim + d;
+    out[out_idx] = out_sum;
 }}
 """
 

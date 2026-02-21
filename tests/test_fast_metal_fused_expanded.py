@@ -54,3 +54,33 @@ def test_fast_metal_na2d_fused_stride_causal_k9_matches_pure_without_fallback(mo
     out_fast = fast_metal.na2d_forward(q, k, v, ks, st, dil, caus, scale)
     mx.eval(out_fast)
     np.testing.assert_allclose(np.array(out_fast), np.array(out_pure), rtol=1e-5, atol=1e-5)
+
+
+def test_fast_metal_na3d_fused_stride_causal_k5_matches_pure_without_fallback(monkeypatch):
+    if not fast_metal.is_available():
+        pytest.skip("fast_metal unavailable")
+
+    q = mx.random.normal((1, 13, 11, 9, 2, 3))
+    k = mx.random.normal((1, 13, 11, 9, 2, 3))
+    v = mx.random.normal((1, 13, 11, 9, 2, 3))
+    ks = (5, 5, 5)
+    st = (2, 3, 2)
+    dil = (2, 1, 2)
+    caus = (True, False, True)
+    scale = 0.29
+
+    out_pure = pure.na3d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_pure)
+
+    def _no_fallback(*_args, **_kwargs):
+        raise AssertionError("unexpected fallback to pure.na3d_forward")
+
+    def _unexpected_split(*_args, **_kwargs):
+        raise AssertionError("unexpected split path in na3d_forward")
+
+    monkeypatch.setattr(pure, "na3d_forward", _no_fallback)
+    monkeypatch.setattr(fast_metal, "na3d_qk_forward", _unexpected_split)
+    monkeypatch.setattr(fast_metal, "na3d_av_forward", _unexpected_split)
+    out_fast = fast_metal.na3d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_fast)
+    np.testing.assert_allclose(np.array(out_fast), np.array(out_pure), rtol=1e-5, atol=1e-5)

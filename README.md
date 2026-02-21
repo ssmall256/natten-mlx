@@ -112,12 +112,12 @@ Median latency table (ms, lower is better):
 
 | Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal speedup vs pure | nanobind speedup vs pure |
 |---|---:|---:|---:|---:|---:|---:|
-| `na1d_k7_s1_d1_noncausal` | `forward` | 0.738 | 0.214 | 0.215 | 3.44x | 3.44x |
-| `na1d_k7_s1_d1_noncausal` | `backward` | 1.006 | 0.694 | 0.716 | 1.45x | 1.40x |
-| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.739 | 0.682 | 0.686 | 2.55x | 2.54x |
-| `na2d_k7x7_s1_d1_noncausal` | `backward` | 1.994 | 2.387 | 2.399 | 0.84x | 0.83x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.890 | 0.280 | 0.293 | 3.18x | 3.04x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 1.011 | 2.030 | 2.120 | 0.50x | 0.48x |
+| `na1d_k7_s1_d1_noncausal` | `forward` | 0.488 | 0.194 | 0.193 | 2.51x | 2.53x |
+| `na1d_k7_s1_d1_noncausal` | `backward` | 0.611 | 0.663 | 0.670 | 0.92x | 0.91x |
+| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.723 | 0.693 | 0.696 | 2.49x | 2.48x |
+| `na2d_k7x7_s1_d1_noncausal` | `backward` | 2.099 | 2.398 | 2.406 | 0.88x | 0.87x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.842 | 0.313 | 0.314 | 2.69x | 2.68x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.979 | 1.937 | 1.981 | 0.51x | 0.49x |
 
 Raw artifacts are written to:
 - `benchmarks/final-perf.json`
@@ -158,14 +158,14 @@ Backward support across backends uses explicit backend backward entrypoints for 
 
 ## Limitations
 
-- Fast Metal fused 3D is not implemented; 3D uses split acceleration where eligible.
 - Fast Metal split acceleration eligibility is strict:
   - 1D split: odd `K`, `stride>=1`, `dilation>=1`, causal/non-causal supported.
-  - 2D split: square odd `K`, per-axis `stride>=1`, equal dilations, per-axis causal/non-causal supported.
-  - 3D split: cubic odd `K`, per-axis `stride>=1`, equal dilations, per-axis causal/non-causal supported.
+  - 2D split: square odd `K`, per-axis `stride>=1`, per-axis `dilation>=1`, per-axis causal/non-causal supported.
+  - 3D split: cubic odd `K`, per-axis `stride>=1`, per-axis `dilation>=1`, per-axis causal/non-causal supported.
 - Fast Metal fused acceleration eligibility:
   - 1D fused: odd `K`, `stride>=1`, `dilation>=1`, causal/non-causal supported.
   - 2D fused: square odd `K`, per-axis `stride>=1`, per-axis `dilation>=1`, per-axis causal/non-causal supported.
+  - 3D fused: cubic odd `K`, per-axis `stride>=1`, per-axis `dilation>=1`, per-axis causal/non-causal supported.
 - Unsupported accelerated configurations fall back to pure backend for correctness.
 - Nanobind tier delegates to fast-metal where available (same exact eligibility constraints), otherwise pure fallback.
 - MLX lazy evaluation applies; this package does not force evaluation.

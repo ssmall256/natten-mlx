@@ -50,7 +50,7 @@ def test_fast_metal_na2d_split_stride_k9_matches_pure_without_fallback(monkeypat
     v = mx.random.normal((1, 21, 19, 2, 3))
     ks = (9, 9)
     st = (2, 3)
-    dil = (2, 2)
+    dil = (2, 1)
     caus = (False, False)
     scale = 0.27
 
@@ -85,7 +85,7 @@ def test_fast_metal_na3d_split_stride_k5_matches_pure_without_fallback(monkeypat
     v = mx.random.normal((1, 13, 11, 10, 2, 3))
     ks = (5, 5, 5)
     st = (2, 2, 2)
-    dil = (2, 2, 2)
+    dil = (2, 1, 2)
     caus = (False, False, False)
     scale = 0.23
 
@@ -155,7 +155,7 @@ def test_fast_metal_na2d_split_stride_k9_causal_matches_pure_without_fallback(mo
     v = mx.random.normal((1, 21, 19, 2, 3))
     ks = (9, 9)
     st = (2, 3)
-    dil = (2, 2)
+    dil = (2, 1)
     caus = (True, False)
     scale = 0.27
 
@@ -190,7 +190,7 @@ def test_fast_metal_na3d_split_stride_k5_causal_matches_pure_without_fallback(mo
     v = mx.random.normal((1, 13, 11, 10, 2, 3))
     ks = (5, 5, 5)
     st = (2, 2, 2)
-    dil = (2, 2, 2)
+    dil = (2, 1, 2)
     caus = (True, False, True)
     scale = 0.23
 

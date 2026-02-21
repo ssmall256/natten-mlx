@@ -11,5 +11,5 @@ def test_support_matrix_shape():
         assert set(row["fusion"].keys()) == {"na1d", "na2d", "na3d"}
         assert isinstance(row["constraints"], list)
 
-    assert matrix["fast_metal"]["fusion"] == {"na1d": True, "na2d": True, "na3d": False}
-    assert matrix["nanobind"]["fusion"] == {"na1d": True, "na2d": True, "na3d": False}
+    assert matrix["fast_metal"]["fusion"] == {"na1d": True, "na2d": True, "na3d": True}
+    assert matrix["nanobind"]["fusion"] == {"na1d": True, "na2d": True, "na3d": True}
