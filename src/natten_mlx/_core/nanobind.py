@@ -22,17 +22,17 @@ def na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
     _not_available()
 
 
-def na1d_qk_forward(q, k, kernel_size, dilation):
+def na1d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
     _not_available()
 
 
-def na1d_av_forward(attn, v, kernel_size, dilation):
+def na1d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
     _not_available()
 
 
-def na2d_qk_forward(q, k, kernel_size, dilation):
+def na2d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
     _not_available()
 
 
-def na2d_av_forward(attn, v, kernel_size, dilation):
+def na2d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
     _not_available()

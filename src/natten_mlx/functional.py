@@ -94,20 +94,40 @@ def na2d(
     return ops.na2d_forward(query, key, value, ks, st, dil, caus, scale)
 
 
-def na1d_qk(query: mx.array, key: mx.array, kernel_size, dilation=1) -> mx.array:
-    """Separate 1D query-key logits. Returns [B, L, H, K]."""
+def na1d_qk(
+    query: mx.array,
+    key: mx.array,
+    kernel_size,
+    dilation=1,
+    *,
+    stride=1,
+    is_causal=False,
+    scale: Optional[float] = None,
+) -> mx.array:
+    """Separate 1D query-key logits. Returns [B, ceil(L/stride), H, K]."""
     _, seqlen, _, _ = _validate_1d_qkv(query, key, key)
     ks = normalize_kernel_size(kernel_size, 1)
+    st = normalize_tuple_param(stride, 1, "stride")
     dil = normalize_tuple_param(dilation, 1, "dilation")
+    caus = normalize_tuple_param(is_causal, 1, "is_causal")
 
     check_kernel_size_vs_input(ks, (seqlen,))
+    check_stride_vs_kernel(st, ks)
     check_dilation_kernel_vs_input(dil, ks, (seqlen,))
 
-    return ops.na1d_qk_forward(query, key, ks, dil)
+    return ops.na1d_qk_forward(query, key, ks, st, dil, caus, scale)
 
 
-def na1d_av(attn: mx.array, value: mx.array, kernel_size, dilation=1) -> mx.array:
-    """Separate 1D attention-value op. attn: [B, L, H, K]."""
+def na1d_av(
+    attn: mx.array,
+    value: mx.array,
+    kernel_size,
+    dilation=1,
+    *,
+    stride=1,
+    is_causal=False,
+) -> mx.array:
+    """Separate 1D attention-value op. attn: [B, ceil(L/stride), H, K]."""
     if attn.ndim != 4 or value.ndim != 4:
         raise ValueError("attn and value must be 4D for na1d_av")
     if attn.shape[0] != value.shape[0] or attn.shape[2] != value.shape[2]:
@@ -117,27 +137,50 @@ def na1d_av(attn: mx.array, value: mx.array, kernel_size, dilation=1) -> mx.arra
         )
 
     ks = normalize_kernel_size(kernel_size, 1)
+    st = normalize_tuple_param(stride, 1, "stride")
     dil = normalize_tuple_param(dilation, 1, "dilation")
+    caus = normalize_tuple_param(is_causal, 1, "is_causal")
 
     check_kernel_size_vs_input(ks, (value.shape[1],))
+    check_stride_vs_kernel(st, ks)
     check_dilation_kernel_vs_input(dil, ks, (value.shape[1],))
 
-    return ops.na1d_av_forward(attn, value, ks, dil)
+    return ops.na1d_av_forward(attn, value, ks, st, dil, caus)
 
 
-def na2d_qk(query: mx.array, key: mx.array, kernel_size, dilation=1) -> mx.array:
-    """Separate 2D query-key logits. Returns [B, H, W, heads, Kh*Kw]."""
+def na2d_qk(
+    query: mx.array,
+    key: mx.array,
+    kernel_size,
+    dilation=1,
+    *,
+    stride=1,
+    is_causal=False,
+    scale: Optional[float] = None,
+) -> mx.array:
+    """Separate 2D query-key logits. Returns [B, Oh, Ow, heads, Kh*Kw]."""
     _, height, width, _, _ = _validate_2d_qkv(query, key, key)
     ks = normalize_kernel_size(kernel_size, 2)
+    st = normalize_tuple_param(stride, 2, "stride")
     dil = normalize_tuple_param(dilation, 2, "dilation")
+    caus = normalize_tuple_param(is_causal, 2, "is_causal")
 
     check_kernel_size_vs_input(ks, (height, width))
+    check_stride_vs_kernel(st, ks)
     check_dilation_kernel_vs_input(dil, ks, (height, width))
 
-    return ops.na2d_qk_forward(query, key, ks, dil)
+    return ops.na2d_qk_forward(query, key, ks, st, dil, caus, scale)
 
 
-def na2d_av(attn: mx.array, value: mx.array, kernel_size, dilation=1) -> mx.array:
+def na2d_av(
+    attn: mx.array,
+    value: mx.array,
+    kernel_size,
+    dilation=1,
+    *,
+    stride=1,
+    is_causal=False,
+) -> mx.array:
     """Separate 2D attention-value op."""
     if attn.ndim != 5 or value.ndim != 5:
         raise ValueError("attn and value must be 5D for na2d_av")
@@ -148,12 +191,15 @@ def na2d_av(attn: mx.array, value: mx.array, kernel_size, dilation=1) -> mx.arra
         )
 
     ks = normalize_kernel_size(kernel_size, 2)
+    st = normalize_tuple_param(stride, 2, "stride")
     dil = normalize_tuple_param(dilation, 2, "dilation")
+    caus = normalize_tuple_param(is_causal, 2, "is_causal")
 
     check_kernel_size_vs_input(ks, (value.shape[1], value.shape[2]))
+    check_stride_vs_kernel(st, ks)
     check_dilation_kernel_vs_input(dil, ks, (value.shape[1], value.shape[2]))
 
-    return ops.na2d_av_forward(attn, value, ks, dil)
+    return ops.na2d_av_forward(attn, value, ks, st, dil, caus)
 
 
 __all__ = ["na1d", "na2d", "na1d_qk", "na1d_av", "na2d_qk", "na2d_av"]

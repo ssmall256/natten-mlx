@@ -31,7 +31,7 @@ def test_neighborhood_attention_2d_module_with_attn_drop():
     assert y.shape == (2, 7, 5, 12)
 
 
-def test_neighborhood_attention_2d_attn_drop_causal_not_supported():
+def test_neighborhood_attention_2d_attn_drop_causal_supported():
     layer = NeighborhoodAttention2D(
         embed_dim=12,
         num_heads=3,
@@ -40,11 +40,11 @@ def test_neighborhood_attention_2d_attn_drop_causal_not_supported():
         attn_drop=0.1,
     )
     x = mx.random.normal((2, 7, 5, 12))
-    with pytest.raises(NotImplementedError):
-        layer(x)
+    y = layer(x)
+    assert y.shape == (2, 7, 5, 12)
 
 
-def test_neighborhood_attention_2d_attn_drop_stride_not_supported():
+def test_neighborhood_attention_2d_attn_drop_stride_supported():
     layer = NeighborhoodAttention2D(
         embed_dim=12,
         num_heads=3,
@@ -53,5 +53,5 @@ def test_neighborhood_attention_2d_attn_drop_stride_not_supported():
         attn_drop=0.1,
     )
     x = mx.random.normal((2, 7, 5, 12))
-    with pytest.raises(NotImplementedError):
-        layer(x)
+    y = layer(x)
+    assert y.shape == (2, 4, 5, 12)

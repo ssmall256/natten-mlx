@@ -204,28 +204,35 @@ def na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
     return mx.sum(weights[..., None] * v_neighbors, axis=-2)
 
 
-def na1d_qk_forward(q, k, kernel_size, dilation):
+def na1d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
     """Separate 1D QK operation returning attention logits."""
     batch, seqlen, heads, head_dim = q.shape
     ksize = kernel_size[0]
+    step = stride[0]
     dil = dilation[0]
+    causal = bool(is_causal[0])
+    out_len = _ceil_div(seqlen, step)
+    scale_value = head_dim ** -0.5 if scale is None else float(scale)
 
-    qpos_np = np.arange(seqlen, dtype=np.int32)
-    indices, _ = _compute_neighbor_indices_1d(
-        seqlen, ksize, dil, is_causal=False, query_positions=qpos_np
+    qpos_np = _query_positions(seqlen, step)
+    qpos = mx.array(qpos_np, dtype=mx.int32)
+    q_sel = mx.take(q, qpos, axis=1)
+    indices, valid = _compute_neighbor_indices_1d(
+        seqlen, ksize, dil, is_causal=causal, query_positions=qpos_np
     )
 
     flat_idx = mx.reshape(indices, (-1,))
     k_neighbors = mx.take(k, flat_idx, axis=1)
-    k_neighbors = mx.reshape(k_neighbors, (batch, seqlen, ksize, heads, head_dim))
+    k_neighbors = mx.reshape(k_neighbors, (batch, out_len, ksize, heads, head_dim))
     k_neighbors = mx.transpose(k_neighbors, axes=(0, 1, 3, 2, 4))
 
-    scale = head_dim ** -0.5
-    logits = mx.sum(q[..., None, :] * k_neighbors, axis=-1) * float(scale)
-    return logits
+    logits = mx.sum(q_sel[..., None, :] * k_neighbors, axis=-1) * scale_value
+    valid_mask = valid[None, :, None, :]
+    neg_inf = mx.full(logits.shape, -float("inf"), dtype=logits.dtype)
+    return mx.where(valid_mask, logits, neg_inf)
 
 
-def na1d_av_forward(attn, v, kernel_size, dilation):
+def na1d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
     """Separate 1D AV operation."""
     batch, out_len, heads, ksize = attn.shape
     _, seqlen, _, head_dim = v.shape
@@ -235,9 +242,18 @@ def na1d_av_forward(attn, v, kernel_size, dilation):
             f"attn kernel dimension ({ksize}) must match kernel_size ({kernel_size[0]})"
         )
 
-    qpos_np = np.arange(out_len, dtype=np.int32)
-    indices, _ = _compute_neighbor_indices_1d(
-        seqlen, kernel_size[0], dilation[0], is_causal=False, query_positions=qpos_np
+    qpos_np = _query_positions(seqlen, stride[0])
+    if out_len != len(qpos_np):
+        raise ValueError(
+            f"attn length ({out_len}) must match ceil(input_len/stride) ({len(qpos_np)})"
+        )
+
+    indices, valid = _compute_neighbor_indices_1d(
+        seqlen,
+        kernel_size[0],
+        dilation[0],
+        is_causal=bool(is_causal[0]),
+        query_positions=qpos_np,
     )
 
     flat_idx = mx.reshape(indices, (-1,))
@@ -245,24 +261,35 @@ def na1d_av_forward(attn, v, kernel_size, dilation):
     v_neighbors = mx.reshape(v_neighbors, (batch, out_len, ksize, heads, head_dim))
     v_neighbors = mx.transpose(v_neighbors, axes=(0, 1, 3, 2, 4))
 
-    return mx.sum(attn[..., None] * v_neighbors, axis=-2)
+    valid_mask = valid[None, :, None, :]
+    masked_attn = mx.where(valid_mask, attn, mx.zeros(attn.shape, dtype=attn.dtype))
+    return mx.sum(masked_attn[..., None] * v_neighbors, axis=-2)
 
 
-def na2d_qk_forward(q, k, kernel_size, dilation):
+def na2d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
     """Separate 2D QK operation returning attention logits."""
     batch, height, width, heads, head_dim = q.shape
     kh, kw = kernel_size
+    sh, sw = stride
     kernel_area = kh * kw
+    scale_value = head_dim ** -0.5 if scale is None else float(scale)
 
-    qh_np = np.arange(height, dtype=np.int32)
-    qw_np = np.arange(width, dtype=np.int32)
+    qh_np = _query_positions(height, sh)
+    qw_np = _query_positions(width, sw)
+    qh = mx.array(qh_np, dtype=mx.int32)
+    qw = mx.array(qw_np, dtype=mx.int32)
+    out_h = len(qh_np)
+    out_w = len(qw_np)
 
-    indices, _ = _compute_neighbor_indices_2d(
+    q_rows = mx.take(q, qh, axis=1)
+    q_sel = mx.take(q_rows, qw, axis=2)
+
+    indices, valid = _compute_neighbor_indices_2d(
         height,
         width,
         kernel_size,
         dilation,
-        is_causal=(False, False),
+        is_causal=(bool(is_causal[0]), bool(is_causal[1])),
         query_h=qh_np,
         query_w=qw_np,
     )
@@ -271,16 +298,17 @@ def na2d_qk_forward(q, k, kernel_size, dilation):
     flat_idx = mx.reshape(indices, (-1,))
     k_neighbors = mx.take(k_flat, flat_idx, axis=1)
     k_neighbors = mx.reshape(
-        k_neighbors, (batch, height, width, kernel_area, heads, head_dim)
+        k_neighbors, (batch, out_h, out_w, kernel_area, heads, head_dim)
     )
     k_neighbors = mx.transpose(k_neighbors, axes=(0, 1, 2, 4, 3, 5))
 
-    scale = head_dim ** -0.5
-    logits = mx.sum(q[..., None, :] * k_neighbors, axis=-1) * float(scale)
-    return logits
+    logits = mx.sum(q_sel[..., None, :] * k_neighbors, axis=-1) * scale_value
+    valid_mask = valid[None, :, :, None, :]
+    neg_inf = mx.full(logits.shape, -float("inf"), dtype=logits.dtype)
+    return mx.where(valid_mask, logits, neg_inf)
 
 
-def na2d_av_forward(attn, v, kernel_size, dilation):
+def na2d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
     """Separate 2D AV operation."""
     batch, out_h, out_w, heads, kernel_area = attn.shape
     _, height, width, _, head_dim = v.shape
@@ -291,15 +319,20 @@ def na2d_av_forward(attn, v, kernel_size, dilation):
             f"got {kernel_area} vs {kernel_size[0] * kernel_size[1]}"
         )
 
-    qh_np = np.arange(out_h, dtype=np.int32)
-    qw_np = np.arange(out_w, dtype=np.int32)
+    qh_np = _query_positions(height, stride[0])
+    qw_np = _query_positions(width, stride[1])
+    if out_h != len(qh_np) or out_w != len(qw_np):
+        raise ValueError(
+            "attn spatial dimensions must match ceil(input/stride); "
+            f"got ({out_h}, {out_w}) vs ({len(qh_np)}, {len(qw_np)})"
+        )
 
-    indices, _ = _compute_neighbor_indices_2d(
+    indices, valid = _compute_neighbor_indices_2d(
         height,
         width,
         kernel_size,
         dilation,
-        is_causal=(False, False),
+        is_causal=(bool(is_causal[0]), bool(is_causal[1])),
         query_h=qh_np,
         query_w=qw_np,
     )
@@ -312,4 +345,6 @@ def na2d_av_forward(attn, v, kernel_size, dilation):
     )
     v_neighbors = mx.transpose(v_neighbors, axes=(0, 1, 2, 4, 3, 5))
 
-    return mx.sum(attn[..., None] * v_neighbors, axis=-2)
+    valid_mask = valid[None, :, :, None, :]
+    masked_attn = mx.where(valid_mask, attn, mx.zeros(attn.shape, dtype=attn.dtype))
+    return mx.sum(masked_attn[..., None] * v_neighbors, axis=-2)

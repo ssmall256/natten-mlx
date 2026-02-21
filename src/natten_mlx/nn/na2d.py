@@ -69,21 +69,27 @@ class NeighborhoodAttention2D(nn.Module):
         q = q.squeeze(3)
         k = k.squeeze(3)
         v = v.squeeze(3)
-
         if self.attn_drop_rate > 0.0:
-            if self.stride != (1, 1) or bool(self.is_causal[0]) or bool(self.is_causal[1]):
-                raise NotImplementedError(
-                    "attn_drop with stride != (1, 1) or is_causal=True is not supported yet. "
-                    "Use attn_drop=0.0 for these configurations."
-                )
-            logits = na2d_qk(q, k, kernel_size=self.kernel_size, dilation=self.dilation)
-            default_scale = self.head_dim ** -0.5
-            if self.scale != default_scale:
-                logits = logits * (self.scale / default_scale)
+            logits = na2d_qk(
+                q,
+                k,
+                kernel_size=self.kernel_size,
+                dilation=self.dilation,
+                stride=self.stride,
+                is_causal=self.is_causal,
+                scale=self.scale,
+            )
             attn = mx.softmax(logits, axis=-1)
             if self.attn_drop is not None:
                 attn = self.attn_drop(attn)
-            out = na2d_av(attn, v, kernel_size=self.kernel_size, dilation=self.dilation)
+            out = na2d_av(
+                attn,
+                v,
+                kernel_size=self.kernel_size,
+                dilation=self.dilation,
+                stride=self.stride,
+                is_causal=self.is_causal,
+            )
         else:
             out = na2d(
                 q,

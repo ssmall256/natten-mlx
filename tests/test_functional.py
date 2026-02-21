@@ -3,7 +3,7 @@ import pytest
 
 mx = pytest.importorskip("mlx.core")
 
-from natten_mlx.functional import na1d, na1d_qk, na2d, na2d_qk
+from natten_mlx.functional import na1d, na1d_av, na1d_qk, na2d, na2d_av, na2d_qk
 from natten_mlx.utils.window import compute_window_start_end
 
 
@@ -174,6 +174,80 @@ def test_na1d_qk_matches_scaled_reference():
     ref = np.einsum("blhd,blkhd->blhk", q_np, kn) * (3 ** -0.5)
 
     assert np.allclose(logits, ref, atol=1e-6, rtol=1e-6)
+
+
+def test_na1d_split_qk_av_matches_fused_with_stride_and_causal():
+    q = mx.random.normal((2, 9, 3, 4))
+    k = mx.random.normal((2, 9, 3, 4))
+    v = mx.random.normal((2, 9, 3, 4))
+
+    logits = na1d_qk(
+        q,
+        k,
+        kernel_size=3,
+        dilation=1,
+        stride=2,
+        is_causal=True,
+        scale=0.37,
+    )
+    attn = mx.softmax(logits, axis=-1)
+    out_split = na1d_av(
+        attn,
+        v,
+        kernel_size=3,
+        dilation=1,
+        stride=2,
+        is_causal=True,
+    )
+    out_fused = na1d(
+        q,
+        k,
+        v,
+        kernel_size=3,
+        stride=2,
+        dilation=1,
+        is_causal=True,
+        scale=0.37,
+    )
+
+    assert np.allclose(np.array(out_split), np.array(out_fused), atol=1e-5, rtol=1e-5)
+
+
+def test_na2d_split_qk_av_matches_fused_with_stride_and_causal():
+    q = mx.random.normal((1, 7, 8, 2, 3))
+    k = mx.random.normal((1, 7, 8, 2, 3))
+    v = mx.random.normal((1, 7, 8, 2, 3))
+
+    logits = na2d_qk(
+        q,
+        k,
+        kernel_size=(3, 3),
+        dilation=(2, 2),
+        stride=(2, 3),
+        is_causal=(True, False),
+        scale=0.41,
+    )
+    attn = mx.softmax(logits, axis=-1)
+    out_split = na2d_av(
+        attn,
+        v,
+        kernel_size=(3, 3),
+        dilation=(2, 2),
+        stride=(2, 3),
+        is_causal=(True, False),
+    )
+    out_fused = na2d(
+        q,
+        k,
+        v,
+        kernel_size=(3, 3),
+        stride=(2, 3),
+        dilation=(2, 2),
+        is_causal=(True, False),
+        scale=0.41,
+    )
+
+    assert np.allclose(np.array(out_split), np.array(out_fused), atol=1e-5, rtol=1e-5)
 
 
 def test_na1d_causal_first_position_attends_to_self_only():

@@ -53,7 +53,7 @@ Compat shims preserve API names and signatures where possible, but tensor types 
   - Modern modules: `NeighborhoodAttention1D`, `NeighborhoodAttention2D`
   - v0.14 compat modules: `natten_mlx.compat.v014.NeighborhoodAttention1D`, `NeighborhoodAttention2D`
 - When `attn_drop > 0`, modules take the split `qk -> softmax -> dropout -> av` path; otherwise they use fused `na1d` / `na2d`.
-- In modern modules, `attn_drop > 0` currently requires non-causal, stride-1 neighborhoods. Causal/strided configurations fail fast with `NotImplementedError` to avoid silent semantic drift.
+- Split `qk/av` kernels in modern modules are stride-aware and causal-aware, so dropout path now supports strided and causal configurations.
 
 ## Upstream Parity
 

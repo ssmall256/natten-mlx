@@ -54,20 +54,20 @@ def na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
     return _backend_module().na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
 
 
-def na1d_qk_forward(q, k, kernel_size, dilation):
-    return _backend_module().na1d_qk_forward(q, k, kernel_size, dilation)
+def na1d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
+    return _backend_module().na1d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale)
 
 
-def na1d_av_forward(attn, v, kernel_size, dilation):
-    return _backend_module().na1d_av_forward(attn, v, kernel_size, dilation)
+def na1d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
+    return _backend_module().na1d_av_forward(attn, v, kernel_size, stride, dilation, is_causal)
 
 
-def na2d_qk_forward(q, k, kernel_size, dilation):
-    return _backend_module().na2d_qk_forward(q, k, kernel_size, dilation)
+def na2d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
+    return _backend_module().na2d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale)
 
 
-def na2d_av_forward(attn, v, kernel_size, dilation):
-    return _backend_module().na2d_av_forward(attn, v, kernel_size, dilation)
+def na2d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
+    return _backend_module().na2d_av_forward(attn, v, kernel_size, stride, dilation, is_causal)
 
 
 register_backend("pure", pure)
