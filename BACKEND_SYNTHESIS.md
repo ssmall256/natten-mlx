@@ -100,10 +100,18 @@ Observed capabilities:
 12. Added backend gradient parity coverage (backend vs pure and upstream v0.14 split reference).
 13. Added tests for support matrix API.
 14. Added required upstream parity gate to backend CI workflow.
+15. Added required backward perf guardrail CI gate (`benchmarks/backward_perf_guardrail.py`).
+16. Added experimental fused AV-backward Metal kernels for 1D/2D/3D, with default runtime path kept on split kernels due current benchmark results.
+17. Optimized split AV-backward `grad_v` kernels with inverse-map edge packing (cached per-edge index bases) to reduce index decode overhead.
+18. Added adaptive compressed index types for cached inverse-map edge bases (`uint16` when safe, `int32` fallback) to cut split-backward index memory traffic.
+19. Hardened required backward perf gating with median-of-medians aggregation (`benchmarks/backward_perf_guardrail.py --rounds`) and sequential CI ordering.
+20. Added 1D split `grad_v` vec4-style backward specialization (4 channels per thread) with dedicated launch tuning.
+21. Added 2D/3D split `grad_v` vec4-style backward specializations (4 channels per thread) with dimension-specific launch tuning.
+22. Added 1D vec4 selection heuristic guard for small-shape corner cases (`D=32, L<=128`) where scalar can be more stable.
 
 ### Deliberately Deferred
 
-1. Further performance-tuning of backward kernels (tiling/fusion beyond current per-op kernels).
+1. Enabling AV-backward fused kernels by default pending kernel-level optimization (current fused variant regresses on benchmark hardware).
 
 ## Current Matrix in This Repo
 
@@ -135,12 +143,13 @@ Observed capabilities:
 
 Generated on `2026-02-21` using:
 `uv run python benchmarks/final_perf_table.py --warmup 5 --trials 25`
+(`--trim-head 2` default trimmed reporting with `raw_*` metrics retained in JSON output)
 
 | Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal speedup vs pure | nanobind speedup vs pure |
 |---|---:|---:|---:|---:|---:|---:|
-| `na1d_k7_s1_d1_noncausal` | `forward` | 0.806 | 0.203 | 0.183 | 3.97x | 4.42x |
-| `na1d_k7_s1_d1_noncausal` | `backward` | 0.866 | 0.317 | 0.315 | 2.73x | 2.75x |
-| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.850 | 0.680 | 0.669 | 2.72x | 2.76x |
-| `na2d_k7x7_s1_d1_noncausal` | `backward` | 1.830 | 0.743 | 0.729 | 2.46x | 2.51x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.844 | 0.304 | 0.306 | 2.78x | 2.76x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.985 | 0.389 | 0.387 | 2.53x | 2.55x |
+| `na1d_k7_s1_d1_noncausal` | `forward` | 0.427 | 0.211 | 0.205 | 2.02x | 2.08x |
+| `na1d_k7_s1_d1_noncausal` | `backward` | 0.483 | 0.333 | 0.335 | 1.45x | 1.44x |
+| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.457 | 0.681 | 0.654 | 2.14x | 2.23x |
+| `na2d_k7x7_s1_d1_noncausal` | `backward` | 1.862 | 0.756 | 0.723 | 2.46x | 2.58x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.819 | 0.321 | 0.315 | 2.56x | 2.60x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.979 | 0.393 | 0.402 | 2.49x | 2.43x |

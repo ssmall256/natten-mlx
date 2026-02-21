@@ -19,7 +19,18 @@ import mlx.core as mx
 from natten_mlx import na1d, na2d, na3d, set_backend
 
 
-def _bench(fn, *, warmup: int, trials: int) -> dict[str, float]:
+def _stats(times_ms: list[float]) -> dict[str, float]:
+    stdev = 0.0 if len(times_ms) <= 1 else float(statistics.pstdev(times_ms))
+    return {
+        "mean_ms": float(statistics.mean(times_ms)),
+        "median_ms": float(statistics.median(times_ms)),
+        "min_ms": float(min(times_ms)),
+        "max_ms": float(max(times_ms)),
+        "stdev_ms": stdev,
+    }
+
+
+def _bench(fn, *, warmup: int, trials: int, trim_head: int) -> dict[str, float]:
     for _ in range(warmup):
         out = fn()
         mx.eval(out)
@@ -31,13 +42,19 @@ def _bench(fn, *, warmup: int, trials: int) -> dict[str, float]:
         mx.eval(out)
         times_ms.append((time.perf_counter() - t0) * 1000.0)
 
-    stdev = 0.0 if len(times_ms) <= 1 else float(statistics.pstdev(times_ms))
+    trimmed = times_ms[trim_head:] if trim_head < len(times_ms) else times_ms[-1:]
+    trimmed_stats = _stats(trimmed)
+    raw_stats = _stats(times_ms)
     return {
-        "mean_ms": float(statistics.mean(times_ms)),
-        "median_ms": float(statistics.median(times_ms)),
-        "min_ms": float(min(times_ms)),
-        "max_ms": float(max(times_ms)),
-        "stdev_ms": stdev,
+        **trimmed_stats,
+        "raw_mean_ms": raw_stats["mean_ms"],
+        "raw_median_ms": raw_stats["median_ms"],
+        "raw_min_ms": raw_stats["min_ms"],
+        "raw_max_ms": raw_stats["max_ms"],
+        "raw_stdev_ms": raw_stats["stdev_ms"],
+        "trim_head": int(trim_head),
+        "raw_trials": int(len(times_ms)),
+        "trimmed_trials": int(len(trimmed)),
     }
 
 
@@ -174,9 +191,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate final perf table for natten-mlx backends.")
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--trials", type=int, default=20)
+    parser.add_argument(
+        "--trim-head",
+        type=int,
+        default=2,
+        help="Drop this many measured trials from the head before reporting stats.",
+    )
     parser.add_argument("--output-json", default="benchmarks/final-perf.json")
     parser.add_argument("--output-md", default="benchmarks/final-perf.md")
     args = parser.parse_args()
+    if args.trim_head < 0:
+        raise SystemExit("--trim-head must be >= 0")
 
     cases = _build_cases()
     backends = ["pure", "fast_metal", "nanobind"]
@@ -186,6 +211,7 @@ def main() -> None:
         "python": platform.python_version(),
         "warmup": args.warmup,
         "trials": args.trials,
+        "trim_head": args.trim_head,
         "cases": [{"name": c["name"]} for c in cases],
         "results": {b: {} for b in backends},
     }
@@ -195,8 +221,18 @@ def main() -> None:
             set_backend(backend)
             for case in cases:
                 payload["results"][backend][case["name"]] = {
-                    "forward": _bench(case["forward"], warmup=args.warmup, trials=args.trials),
-                    "backward": _bench(case["backward"], warmup=args.warmup, trials=args.trials),
+                    "forward": _bench(
+                        case["forward"],
+                        warmup=args.warmup,
+                        trials=args.trials,
+                        trim_head=args.trim_head,
+                    ),
+                    "backward": _bench(
+                        case["backward"],
+                        warmup=args.warmup,
+                        trials=args.trials,
+                        trim_head=args.trim_head,
+                    ),
                 }
     finally:
         set_backend("auto")

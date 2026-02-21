@@ -157,6 +157,16 @@ jobs:
       - name: Install numpy runtime dependency
         run: uv pip install numpy
 
+      - name: Run backward perf guardrail (required)
+        run: >
+          uv run python benchmarks/backward_perf_guardrail.py
+          --output benchmarks/backward-guardrail.json
+          --warmup 3
+          --trials 8
+          --rounds 3
+          --min-speedup 1.20
+          --github-annotations
+
       - name: Run benchmark smoke (non-blocking warnings)
         run: >
           uv run python benchmarks/backend_smoke.py
@@ -170,5 +180,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: backend-benchmark-smoke
-          path: benchmarks/backend-smoke.json
+          path: |
+            benchmarks/backend-smoke.json
+            benchmarks/backward-guardrail.json
           if-no-files-found: error

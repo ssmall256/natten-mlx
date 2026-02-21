@@ -845,8 +845,42 @@ for (int d = 0; d < dim; d++) {{
         }}
     }}
     int out_idx = (((b * heads + h) * length + key_i) * dim + d);
-    out[out_idx] = acc;
+out[out_idx] = acc;
 }}
+"""
+
+
+def source_1d_qk_backward_k_inverse(kernel_size: int) -> str:
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int length = query_shape[2];
+const int dim = query_shape[3];
+const int out_length = grad_attn_shape[2];
+const float scale = scale_param[0];
+const int K = {kernel_size};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int d = gid.x;
+int key_i = gid.y;
+if (b >= batch_size || h >= heads || key_i >= length || d >= dim) return;
+
+int bh = b * heads + h;
+int attn_bh_base = bh * out_length * K;
+int query_bh_base = bh * length * dim;
+int start = (int)inv_offsets[key_i];
+int end = (int)inv_offsets[key_i + 1];
+
+float acc = 0.0f;
+for (int edge = start; edge < end; edge++) {{
+    int g_idx = attn_bh_base + (int)inv_attn_base[edge];
+    int q_idx = query_bh_base + (int)inv_query_base[edge] + d;
+    acc += grad_attn[g_idx] * query[q_idx] * scale;
+}}
+int out_idx = (((b * heads + h) * length + key_i) * dim + d);
+out[out_idx] = acc;
 """
 
 
@@ -908,7 +942,6 @@ for (int d = 0; d < dim; d++) {{
 
 
 def source_1d_av_backward_v(kernel_size: int) -> str:
-    nh = _nh(kernel_size)
     return _HELPERS + f"""
 uint3 gid = thread_position_in_grid;
 const int batch_size = grad_out_shape[0];
@@ -916,45 +949,73 @@ const int heads = grad_out_shape[1];
 const int out_length = grad_out_shape[2];
 const int dim = grad_out_shape[3];
 const int length = (int)target_shape_param[0];
-const int stride = (int)stride_param[0];
-const int dilation = (int)dilation_param[0];
-const bool causal = ((int)causal_param[0]) != 0;
 const int K = {kernel_size};
-const int NH = {nh};
 
 int b = gid.z / heads;
 int h = gid.z % heads;
-int val_i = gid.x;
-if (b >= batch_size || h >= heads || val_i >= length) return;
+int d = gid.x;
+int val_i = gid.y;
+if (b >= batch_size || h >= heads || val_i >= length || d >= dim) return;
+int bh = b * heads + h;
+int attn_bh_base = bh * out_length * K;
+int grad_bh_base = bh * out_length * dim;
 
-for (int d = 0; d < dim; d++) {{
-    float acc = 0.0f;
-    for (int out_i = 0; out_i < out_length; out_i++) {{
-        int i = out_i * stride;
-        if (i >= length) continue;
+int start = (int)inv_offsets[val_i];
+int end = (int)inv_offsets[val_i + 1];
 
-        int ni = 0;
-        int ei = length;
-        if (!causal) {{
-            NATTEN_GET_WINDOW_START(ni, i, length, K, NH, dilation);
-            NATTEN_GET_WINDOW_END(ei, ni, length, K, dilation);
-        }}
-
-        for (int ki = 0; ki < K; ki++) {{
-            int candidate = (causal ? (i - (K - 1) * dilation) : ni) + ki * dilation;
-            bool valid = causal
-                ? (candidate >= 0 && candidate <= i && candidate < length)
-                : (candidate >= 0 && candidate < ei);
-            if (valid && candidate == val_i) {{
-                int a_idx = (((b * heads + h) * out_length + out_i) * K + ki);
-                int g_idx = (((b * heads + h) * out_length + out_i) * dim + d);
-                acc += attention_probs[a_idx] * grad_out[g_idx];
-            }}
-        }}
-    }}
-    int out_idx = (((b * heads + h) * length + val_i) * dim + d);
-    out[out_idx] = acc;
+float acc = 0.0f;
+for (int edge = start; edge < end; edge++) {{
+    int a_idx = attn_bh_base + (int)inv_attn_base[edge];
+    int g_idx = grad_bh_base + (int)inv_grad_base[edge] + d;
+    acc += attention_probs[a_idx] * grad_out[g_idx];
 }}
+int out_idx = (((b * heads + h) * length + val_i) * dim + d);
+out[out_idx] = acc;
+"""
+
+
+def source_1d_av_backward_v_vec4(kernel_size: int) -> str:
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = grad_out_shape[0];
+const int heads = grad_out_shape[1];
+const int out_length = grad_out_shape[2];
+const int dim = grad_out_shape[3];
+const int length = (int)target_shape_param[0];
+const int K = {kernel_size};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int d4 = gid.x;
+int val_i = gid.y;
+if (b >= batch_size || h >= heads || val_i >= length) return;
+int d0 = d4 * 4;
+if (d0 + 3 >= dim) return;
+int bh = b * heads + h;
+int attn_bh_base = bh * out_length * K;
+int grad_bh_base = bh * out_length * dim;
+
+int start = (int)inv_offsets[val_i];
+int end = (int)inv_offsets[val_i + 1];
+
+float acc0 = 0.0f;
+float acc1 = 0.0f;
+float acc2 = 0.0f;
+float acc3 = 0.0f;
+for (int edge = start; edge < end; edge++) {{
+    int a_idx = attn_bh_base + (int)inv_attn_base[edge];
+    int g_base = grad_bh_base + (int)inv_grad_base[edge] + d0;
+    float a = attention_probs[a_idx];
+    acc0 += a * grad_out[g_base];
+    acc1 += a * grad_out[g_base + 1];
+    acc2 += a * grad_out[g_base + 2];
+    acc3 += a * grad_out[g_base + 3];
+}}
+int out_base = (((b * heads + h) * length + val_i) * dim + d0);
+out[out_base] = acc0;
+out[out_base + 1] = acc1;
+out[out_base + 2] = acc2;
+out[out_base + 3] = acc3;
 """
 
 
@@ -1009,6 +1070,95 @@ for (int ki = 0; ki < K; ki++) {{
     }}
     int out_idx = (((b * heads + h) * out_length + out_i) * K + ki);
     out[out_idx] = acc;
+}}
+"""
+
+
+def source_1d_av_backward_fused(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = grad_out_shape[0];
+const int heads = grad_out_shape[1];
+const int out_length = grad_out_shape[2];
+const int dim = grad_out_shape[3];
+const int length = (int)target_shape_param[0];
+const int stride = (int)stride_param[0];
+const int dilation = (int)dilation_param[0];
+const bool causal = ((int)causal_param[0]) != 0;
+const int K = {kernel_size};
+const int NH = {nh};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int x = gid.x;
+if (b >= batch_size || h >= heads) return;
+
+if (x < out_length) {{
+    int out_i = x;
+    int i = out_i * stride;
+    if (i >= length) {{
+        for (int ki = 0; ki < K; ki++) {{
+            int out_idx = (((b * heads + h) * out_length + out_i) * K + ki);
+            grad_attn[out_idx] = 0.0f;
+        }}
+    }} else {{
+        int ni = 0;
+        int ei = length;
+        if (!causal) {{
+            NATTEN_GET_WINDOW_START(ni, i, length, K, NH, dilation);
+            NATTEN_GET_WINDOW_END(ei, ni, length, K, dilation);
+        }}
+
+        for (int ki = 0; ki < K; ki++) {{
+            int val_i = (causal ? (i - (K - 1) * dilation) : ni) + ki * dilation;
+            bool valid = causal
+                ? (val_i >= 0 && val_i <= i && val_i < length)
+                : (val_i >= 0 && val_i < ei);
+            float acc = 0.0f;
+            if (valid) {{
+                for (int d = 0; d < dim; d++) {{
+                    int g_idx = (((b * heads + h) * out_length + out_i) * dim + d);
+                    int v_idx = (((b * heads + h) * length + val_i) * dim + d);
+                    acc += grad_out[g_idx] * value[v_idx];
+                }}
+            }}
+            int out_idx = (((b * heads + h) * out_length + out_i) * K + ki);
+            grad_attn[out_idx] = acc;
+        }}
+    }}
+}}
+
+if (x < length) {{
+    int val_i = x;
+    for (int d = 0; d < dim; d++) {{
+        float acc = 0.0f;
+        for (int out_i = 0; out_i < out_length; out_i++) {{
+            int i = out_i * stride;
+            if (i >= length) continue;
+
+            int ni = 0;
+            int ei = length;
+            if (!causal) {{
+                NATTEN_GET_WINDOW_START(ni, i, length, K, NH, dilation);
+                NATTEN_GET_WINDOW_END(ei, ni, length, K, dilation);
+            }}
+
+            for (int ki = 0; ki < K; ki++) {{
+                int candidate = (causal ? (i - (K - 1) * dilation) : ni) + ki * dilation;
+                bool valid = causal
+                    ? (candidate >= 0 && candidate <= i && candidate < length)
+                    : (candidate >= 0 && candidate < ei);
+                if (valid && candidate == val_i) {{
+                    int a_idx = (((b * heads + h) * out_length + out_i) * K + ki);
+                    int g_idx = (((b * heads + h) * out_length + out_i) * dim + d);
+                    acc += attention_probs[a_idx] * grad_out[g_idx];
+                }}
+            }}
+        }}
+        int out_idx = (((b * heads + h) * length + val_i) * dim + d);
+        grad_v[out_idx] = acc;
+    }}
 }}
 """
 
@@ -1166,7 +1316,6 @@ for (int d = 0; d < dim; d++) {{
 
 
 def source_2d_av_backward_v(kernel_size: int) -> str:
-    nh = _nh(kernel_size)
     area = _area(kernel_size)
     return _HELPERS + f"""
 uint3 gid = thread_position_in_grid;
@@ -1177,65 +1326,83 @@ const int out_width = grad_out_shape[3];
 const int dim = grad_out_shape[4];
 const int height = (int)target_shape_param[0];
 const int width = (int)target_shape_param[1];
-const int stride_h = (int)stride_param[0];
-const int stride_w = (int)stride_param[1];
-const int dilation_h = (int)dilation_param[0];
-const int dilation_w = (int)dilation_param[1];
-const bool causal_h = ((int)causal_param[0]) != 0;
-const bool causal_w = ((int)causal_param[1]) != 0;
 const int K = {kernel_size};
-const int NH = {nh};
 const int L = {area};
+const int out_count = out_height * out_width;
+const int value_count = height * width;
 
 int b = gid.z / heads;
 int h = gid.z % heads;
-int val_i = gid.y;
-int val_j = gid.x;
-if (b >= batch_size || h >= heads || val_i >= height || val_j >= width) return;
+int d = gid.x;
+int val_linear = gid.y;
+if (b >= batch_size || h >= heads || val_linear >= value_count || d >= dim) return;
+int val_i = val_linear / width;
+int val_j = val_linear - val_i * width;
+int bh = b * heads + h;
+int attn_bh_base = bh * out_count * L;
+int grad_bh_base = bh * out_count * dim;
+int start = (int)inv_offsets[val_linear];
+int end = (int)inv_offsets[val_linear + 1];
 
-for (int d = 0; d < dim; d++) {{
-    float acc = 0.0f;
-    for (int out_i = 0; out_i < out_height; out_i++) {{
-        int i = out_i * stride_h;
-        if (i >= height) continue;
-        for (int out_j = 0; out_j < out_width; out_j++) {{
-            int j = out_j * stride_w;
-            if (j >= width) continue;
-
-            int ni = 0, nj = 0, ei = height, ej = width;
-            if (!causal_h) {{
-                NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation_h);
-                NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation_h);
-            }}
-            if (!causal_w) {{
-                NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation_w);
-                NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
-            }}
-
-            int neighbor_idx = 0;
-            for (int ki = 0; ki < K; ki++) {{
-                for (int kj = 0; kj < K; kj++) {{
-                    int cand_i = (causal_h ? (i - (K - 1) * dilation_h) : ni) + ki * dilation_h;
-                    int cand_j = (causal_w ? (j - (K - 1) * dilation_w) : nj) + kj * dilation_w;
-                    bool valid_i = causal_h
-                        ? (cand_i >= 0 && cand_i <= i && cand_i < height)
-                        : (cand_i >= 0 && cand_i < ei);
-                    bool valid_j = causal_w
-                        ? (cand_j >= 0 && cand_j <= j && cand_j < width)
-                        : (cand_j >= 0 && cand_j < ej);
-                    if (valid_i && valid_j && cand_i == val_i && cand_j == val_j) {{
-                        int a_idx = ((((b * heads + h) * out_height + out_i) * out_width + out_j) * L + neighbor_idx);
-                        int g_idx = ((((b * heads + h) * out_height + out_i) * out_width + out_j) * dim + d);
-                        acc += attention_probs[a_idx] * grad_out[g_idx];
-                    }}
-                    neighbor_idx++;
-                }}
-            }}
-        }}
-    }}
-    int out_idx = ((((b * heads + h) * height + val_i) * width + val_j) * dim + d);
-    out[out_idx] = acc;
+float acc = 0.0f;
+for (int edge = start; edge < end; edge++) {{
+    int a_idx = attn_bh_base + (int)inv_attn_base[edge];
+    int g_idx = grad_bh_base + (int)inv_grad_base[edge] + d;
+    acc += attention_probs[a_idx] * grad_out[g_idx];
 }}
+int out_idx = ((((b * heads + h) * height + val_i) * width + val_j) * dim + d);
+out[out_idx] = acc;
+"""
+
+
+def source_2d_av_backward_v_vec4(kernel_size: int) -> str:
+    area = _area(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = grad_out_shape[0];
+const int heads = grad_out_shape[1];
+const int out_height = grad_out_shape[2];
+const int out_width = grad_out_shape[3];
+const int dim = grad_out_shape[4];
+const int height = (int)target_shape_param[0];
+const int width = (int)target_shape_param[1];
+const int L = {area};
+const int out_count = out_height * out_width;
+const int value_count = height * width;
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int d4 = gid.x;
+int val_linear = gid.y;
+if (b >= batch_size || h >= heads || val_linear >= value_count) return;
+int d0 = d4 * 4;
+if (d0 + 3 >= dim) return;
+int val_i = val_linear / width;
+int val_j = val_linear - val_i * width;
+int bh = b * heads + h;
+int attn_bh_base = bh * out_count * L;
+int grad_bh_base = bh * out_count * dim;
+int start = (int)inv_offsets[val_linear];
+int end = (int)inv_offsets[val_linear + 1];
+
+float acc0 = 0.0f;
+float acc1 = 0.0f;
+float acc2 = 0.0f;
+float acc3 = 0.0f;
+for (int edge = start; edge < end; edge++) {{
+    int a_idx = attn_bh_base + (int)inv_attn_base[edge];
+    int g_base = grad_bh_base + (int)inv_grad_base[edge] + d0;
+    float a = attention_probs[a_idx];
+    acc0 += a * grad_out[g_base];
+    acc1 += a * grad_out[g_base + 1];
+    acc2 += a * grad_out[g_base + 2];
+    acc3 += a * grad_out[g_base + 3];
+}}
+int out_base = ((((b * heads + h) * height + val_i) * width + val_j) * dim + d0);
+out[out_base] = acc0;
+out[out_base + 1] = acc1;
+out[out_base + 2] = acc2;
+out[out_base + 3] = acc3;
 """
 
 
@@ -1309,6 +1476,132 @@ for (int ki = 0; ki < K; ki++) {{
         int out_idx = ((((b * heads + h) * out_height + out_i) * out_width + out_j) * L + neighbor_idx);
         out[out_idx] = acc;
         neighbor_idx++;
+    }}
+}}
+"""
+
+
+def source_2d_av_backward_fused(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    area = _area(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = grad_out_shape[0];
+const int heads = grad_out_shape[1];
+const int out_height = grad_out_shape[2];
+const int out_width = grad_out_shape[3];
+const int dim = grad_out_shape[4];
+const int height = (int)target_shape_param[0];
+const int width = (int)target_shape_param[1];
+const int stride_h = (int)stride_param[0];
+const int stride_w = (int)stride_param[1];
+const int dilation_h = (int)dilation_param[0];
+const int dilation_w = (int)dilation_param[1];
+const bool causal_h = ((int)causal_param[0]) != 0;
+const bool causal_w = ((int)causal_param[1]) != 0;
+const int K = {kernel_size};
+const int NH = {nh};
+const int L = {area};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int y = gid.y;
+int x = gid.x;
+if (b >= batch_size || h >= heads) return;
+
+if (y < out_height && x < out_width) {{
+    int out_i = y;
+    int out_j = x;
+    int i = out_i * stride_h;
+    int j = out_j * stride_w;
+    if (i >= height || j >= width) {{
+        for (int n = 0; n < L; n++) {{
+            int out_idx = ((((b * heads + h) * out_height + out_i) * out_width + out_j) * L + n);
+            grad_attn[out_idx] = 0.0f;
+        }}
+    }} else {{
+        int ni = 0, nj = 0, ei = height, ej = width;
+        if (!causal_h) {{
+            NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation_h);
+            NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation_h);
+        }}
+        if (!causal_w) {{
+            NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation_w);
+            NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
+        }}
+
+        int neighbor_idx = 0;
+        for (int ki = 0; ki < K; ki++) {{
+            for (int kj = 0; kj < K; kj++) {{
+                int val_i = (causal_h ? (i - (K - 1) * dilation_h) : ni) + ki * dilation_h;
+                int val_j = (causal_w ? (j - (K - 1) * dilation_w) : nj) + kj * dilation_w;
+                bool valid_i = causal_h
+                    ? (val_i >= 0 && val_i <= i && val_i < height)
+                    : (val_i >= 0 && val_i < ei);
+                bool valid_j = causal_w
+                    ? (val_j >= 0 && val_j <= j && val_j < width)
+                    : (val_j >= 0 && val_j < ej);
+                float acc = 0.0f;
+                if (valid_i && valid_j) {{
+                    for (int d = 0; d < dim; d++) {{
+                        int g_idx = ((((b * heads + h) * out_height + out_i) * out_width + out_j) * dim + d);
+                        int v_idx = ((((b * heads + h) * height + val_i) * width + val_j) * dim + d);
+                        acc += grad_out[g_idx] * value[v_idx];
+                    }}
+                }}
+                int out_idx = ((((b * heads + h) * out_height + out_i) * out_width + out_j) * L + neighbor_idx);
+                grad_attn[out_idx] = acc;
+                neighbor_idx++;
+            }}
+        }}
+    }}
+}}
+
+if (y < height && x < width) {{
+    int val_i = y;
+    int val_j = x;
+    for (int d = 0; d < dim; d++) {{
+        float acc = 0.0f;
+        for (int out_i = 0; out_i < out_height; out_i++) {{
+            int i = out_i * stride_h;
+            if (i >= height) continue;
+            for (int out_j = 0; out_j < out_width; out_j++) {{
+                int j = out_j * stride_w;
+                if (j >= width) continue;
+
+                int ni = 0, nj = 0, ei = height, ej = width;
+                if (!causal_h) {{
+                    NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation_h);
+                    NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation_h);
+                }}
+                if (!causal_w) {{
+                    NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation_w);
+                    NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
+                }}
+
+                int neighbor_idx = 0;
+                for (int ki = 0; ki < K; ki++) {{
+                    for (int kj = 0; kj < K; kj++) {{
+                        int cand_i = (causal_h ? (i - (K - 1) * dilation_h) : ni) + ki * dilation_h;
+                        int cand_j = (causal_w ? (j - (K - 1) * dilation_w) : nj) + kj * dilation_w;
+                        bool valid_i = causal_h
+                            ? (cand_i >= 0 && cand_i <= i && cand_i < height)
+                            : (cand_i >= 0 && cand_i < ei);
+                        bool valid_j = causal_w
+                            ? (cand_j >= 0 && cand_j <= j && cand_j < width)
+                            : (cand_j >= 0 && cand_j < ej);
+                        if (valid_i && valid_j && cand_i == val_i && cand_j == val_j) {{
+                            int a_idx = ((((b * heads + h) * out_height + out_i) * out_width + out_j) * L + neighbor_idx);
+                            int g_idx = ((((b * heads + h) * out_height + out_i) * out_width + out_j) * dim + d);
+                            acc += attention_probs[a_idx] * grad_out[g_idx];
+                        }}
+                        neighbor_idx++;
+                    }}
+                }}
+            }}
+        }}
+        int out_idx = ((((b * heads + h) * height + val_i) * width + val_j) * dim + d);
+        grad_v[out_idx] = acc;
     }}
 }}
 """
@@ -1507,7 +1800,6 @@ for (int d = 0; d < dim; d++) {{
 
 
 def source_3d_av_backward_v(kernel_size: int) -> str:
-    nh = _nh(kernel_size)
     volume = _volume(kernel_size)
     return _HELPERS + f"""
 uint3 gid = thread_position_in_grid;
@@ -1520,85 +1812,92 @@ const int dim = grad_out_shape[5];
 const int depth = (int)target_shape_param[0];
 const int height = (int)target_shape_param[1];
 const int width = (int)target_shape_param[2];
-const int stride_d = (int)stride_param[0];
-const int stride_h = (int)stride_param[1];
-const int stride_w = (int)stride_param[2];
-const int dilation_d = (int)dilation_param[0];
-const int dilation_h = (int)dilation_param[1];
-const int dilation_w = (int)dilation_param[2];
-const bool causal_d = ((int)causal_param[0]) != 0;
-const bool causal_h = ((int)causal_param[1]) != 0;
-const bool causal_w = ((int)causal_param[2]) != 0;
-const int K = {kernel_size};
-const int NH = {nh};
 const int L = {volume};
+const int out_count = out_depth * out_height * out_width;
+const int hw = height * width;
+const int value_count = depth * hw;
 
-int val_z = gid.z % depth;
-int bh = gid.z / depth;
+int bh = gid.z;
 int b = bh / heads;
 int h = bh % heads;
-int val_i = gid.y;
-int val_j = gid.x;
-if (b >= batch_size || h >= heads || val_z >= depth || val_i >= height || val_j >= width) return;
+int d = gid.x;
+int val_linear = gid.y;
+if (b >= batch_size || h >= heads || val_linear >= value_count || d >= dim) return;
+int val_z = val_linear / hw;
+int rem = val_linear - val_z * hw;
+int val_i = rem / width;
+int val_j = rem - val_i * width;
+int bh_idx = b * heads + h;
+int attn_bh_base = bh_idx * out_count * L;
+int grad_bh_base = bh_idx * out_count * dim;
+int start = (int)inv_offsets[val_linear];
+int end = (int)inv_offsets[val_linear + 1];
 
-for (int d = 0; d < dim; d++) {{
-    float acc = 0.0f;
-    for (int out_z = 0; out_z < out_depth; out_z++) {{
-        int z = out_z * stride_d;
-        if (z >= depth) continue;
-        for (int out_i = 0; out_i < out_height; out_i++) {{
-            int i = out_i * stride_h;
-            if (i >= height) continue;
-            for (int out_j = 0; out_j < out_width; out_j++) {{
-                int j = out_j * stride_w;
-                if (j >= width) continue;
-
-                int nz = 0, ni = 0, nj = 0, ez = depth, ei = height, ej = width;
-                if (!causal_d) {{
-                    NATTEN_GET_WINDOW_START(nz, z, depth, K, NH, dilation_d);
-                    NATTEN_GET_WINDOW_END(ez, nz, depth, K, dilation_d);
-                }}
-                if (!causal_h) {{
-                    NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation_h);
-                    NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation_h);
-                }}
-                if (!causal_w) {{
-                    NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation_w);
-                    NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
-                }}
-
-                int neighbor_idx = 0;
-                for (int kz = 0; kz < K; kz++) {{
-                    for (int ki = 0; ki < K; ki++) {{
-                        for (int kj = 0; kj < K; kj++) {{
-                            int cand_z = (causal_d ? (z - (K - 1) * dilation_d) : nz) + kz * dilation_d;
-                            int cand_i = (causal_h ? (i - (K - 1) * dilation_h) : ni) + ki * dilation_h;
-                            int cand_j = (causal_w ? (j - (K - 1) * dilation_w) : nj) + kj * dilation_w;
-                            bool valid_z = causal_d
-                                ? (cand_z >= 0 && cand_z <= z && cand_z < depth)
-                                : (cand_z >= 0 && cand_z < ez);
-                            bool valid_i = causal_h
-                                ? (cand_i >= 0 && cand_i <= i && cand_i < height)
-                                : (cand_i >= 0 && cand_i < ei);
-                            bool valid_j = causal_w
-                                ? (cand_j >= 0 && cand_j <= j && cand_j < width)
-                                : (cand_j >= 0 && cand_j < ej);
-                            if (valid_z && valid_i && valid_j
-                                && cand_z == val_z && cand_i == val_i && cand_j == val_j) {{
-                                int a_idx = (((((b * heads + h) * out_depth + out_z) * out_height + out_i) * out_width + out_j) * L + neighbor_idx);
-                                int g_idx = (((((b * heads + h) * out_depth + out_z) * out_height + out_i) * out_width + out_j) * dim + d);
-                                acc += attention_probs[a_idx] * grad_out[g_idx];
-                            }}
-                            neighbor_idx++;
-                        }}
-                    }}
-                }}
-            }}
-        }}
-    }}
-    int out_idx = (((((b * heads + h) * depth + val_z) * height + val_i) * width + val_j) * dim + d);
-    out[out_idx] = acc;
+float acc = 0.0f;
+for (int edge = start; edge < end; edge++) {{
+    int a_idx = attn_bh_base + (int)inv_attn_base[edge];
+    int g_idx = grad_bh_base + (int)inv_grad_base[edge] + d;
+    acc += attention_probs[a_idx] * grad_out[g_idx];
 }}
+int out_idx = (((((b * heads + h) * depth + val_z) * height + val_i) * width + val_j) * dim + d);
+out[out_idx] = acc;
+"""
+
+
+def source_3d_av_backward_v_vec4(kernel_size: int) -> str:
+    volume = _volume(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = grad_out_shape[0];
+const int heads = grad_out_shape[1];
+const int out_depth = grad_out_shape[2];
+const int out_height = grad_out_shape[3];
+const int out_width = grad_out_shape[4];
+const int dim = grad_out_shape[5];
+const int depth = (int)target_shape_param[0];
+const int height = (int)target_shape_param[1];
+const int width = (int)target_shape_param[2];
+const int L = {volume};
+const int out_count = out_depth * out_height * out_width;
+const int hw = height * width;
+const int value_count = depth * hw;
+
+int bh = gid.z;
+int b = bh / heads;
+int h = bh % heads;
+int d4 = gid.x;
+int val_linear = gid.y;
+if (b >= batch_size || h >= heads || val_linear >= value_count) return;
+int d0 = d4 * 4;
+if (d0 + 3 >= dim) return;
+int val_z = val_linear / hw;
+int rem = val_linear - val_z * hw;
+int val_i = rem / width;
+int val_j = rem - val_i * width;
+int bh_idx = b * heads + h;
+int attn_bh_base = bh_idx * out_count * L;
+int grad_bh_base = bh_idx * out_count * dim;
+int start = (int)inv_offsets[val_linear];
+int end = (int)inv_offsets[val_linear + 1];
+
+float acc0 = 0.0f;
+float acc1 = 0.0f;
+float acc2 = 0.0f;
+float acc3 = 0.0f;
+for (int edge = start; edge < end; edge++) {{
+    int a_idx = attn_bh_base + (int)inv_attn_base[edge];
+    int g_base = grad_bh_base + (int)inv_grad_base[edge] + d0;
+    float a = attention_probs[a_idx];
+    acc0 += a * grad_out[g_base];
+    acc1 += a * grad_out[g_base + 1];
+    acc2 += a * grad_out[g_base + 2];
+    acc3 += a * grad_out[g_base + 3];
+}}
+int out_base = (((((b * heads + h) * depth + val_z) * height + val_i) * width + val_j) * dim + d0);
+out[out_base] = acc0;
+out[out_base + 1] = acc1;
+out[out_base + 2] = acc2;
+out[out_base + 3] = acc3;
 """
 
 
@@ -1690,6 +1989,168 @@ for (int kz = 0; kz < K; kz++) {{
             out[out_idx] = acc;
             neighbor_idx++;
         }}
+    }}
+}}
+"""
+
+
+def source_3d_av_backward_fused(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    volume = _volume(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = grad_out_shape[0];
+const int heads = grad_out_shape[1];
+const int out_depth = grad_out_shape[2];
+const int out_height = grad_out_shape[3];
+const int out_width = grad_out_shape[4];
+const int dim = grad_out_shape[5];
+const int depth = (int)target_shape_param[0];
+const int height = (int)target_shape_param[1];
+const int width = (int)target_shape_param[2];
+const int stride_d = (int)stride_param[0];
+const int stride_h = (int)stride_param[1];
+const int stride_w = (int)stride_param[2];
+const int dilation_d = (int)dilation_param[0];
+const int dilation_h = (int)dilation_param[1];
+const int dilation_w = (int)dilation_param[2];
+const bool causal_d = ((int)causal_param[0]) != 0;
+const bool causal_h = ((int)causal_param[1]) != 0;
+const bool causal_w = ((int)causal_param[2]) != 0;
+const int K = {kernel_size};
+const int NH = {nh};
+const int L = {volume};
+
+const int max_depth = depth > out_depth ? depth : out_depth;
+int plane = gid.z % max_depth;
+int bh = gid.z / max_depth;
+int b = bh / heads;
+int h = bh % heads;
+int y = gid.y;
+int x = gid.x;
+if (b >= batch_size || h >= heads) return;
+
+if (plane < out_depth && y < out_height && x < out_width) {{
+    int out_z = plane;
+    int out_i = y;
+    int out_j = x;
+    int z = out_z * stride_d;
+    int i = out_i * stride_h;
+    int j = out_j * stride_w;
+    if (z >= depth || i >= height || j >= width) {{
+        for (int n = 0; n < L; n++) {{
+            int out_idx = (((((b * heads + h) * out_depth + out_z) * out_height + out_i) * out_width + out_j) * L + n);
+            grad_attn[out_idx] = 0.0f;
+        }}
+    }} else {{
+        int nz = 0, ni = 0, nj = 0, ez = depth, ei = height, ej = width;
+        if (!causal_d) {{
+            NATTEN_GET_WINDOW_START(nz, z, depth, K, NH, dilation_d);
+            NATTEN_GET_WINDOW_END(ez, nz, depth, K, dilation_d);
+        }}
+        if (!causal_h) {{
+            NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation_h);
+            NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation_h);
+        }}
+        if (!causal_w) {{
+            NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation_w);
+            NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
+        }}
+
+        int neighbor_idx = 0;
+        for (int kz = 0; kz < K; kz++) {{
+            for (int ki = 0; ki < K; ki++) {{
+                for (int kj = 0; kj < K; kj++) {{
+                    int val_z = (causal_d ? (z - (K - 1) * dilation_d) : nz) + kz * dilation_d;
+                    int val_i = (causal_h ? (i - (K - 1) * dilation_h) : ni) + ki * dilation_h;
+                    int val_j = (causal_w ? (j - (K - 1) * dilation_w) : nj) + kj * dilation_w;
+                    bool valid_z = causal_d
+                        ? (val_z >= 0 && val_z <= z && val_z < depth)
+                        : (val_z >= 0 && val_z < ez);
+                    bool valid_i = causal_h
+                        ? (val_i >= 0 && val_i <= i && val_i < height)
+                        : (val_i >= 0 && val_i < ei);
+                    bool valid_j = causal_w
+                        ? (val_j >= 0 && val_j <= j && val_j < width)
+                        : (val_j >= 0 && val_j < ej);
+                    float acc = 0.0f;
+                    if (valid_z && valid_i && valid_j) {{
+                        for (int d = 0; d < dim; d++) {{
+                            int g_idx = (((((b * heads + h) * out_depth + out_z) * out_height + out_i) * out_width + out_j) * dim + d);
+                            int v_idx = (((((b * heads + h) * depth + val_z) * height + val_i) * width + val_j) * dim + d);
+                            acc += grad_out[g_idx] * value[v_idx];
+                        }}
+                    }}
+                    int out_idx = (((((b * heads + h) * out_depth + out_z) * out_height + out_i) * out_width + out_j) * L + neighbor_idx);
+                    grad_attn[out_idx] = acc;
+                    neighbor_idx++;
+                }}
+            }}
+        }}
+    }}
+}}
+
+if (plane < depth && y < height && x < width) {{
+    int val_z = plane;
+    int val_i = y;
+    int val_j = x;
+    for (int d = 0; d < dim; d++) {{
+        float acc = 0.0f;
+        for (int out_z = 0; out_z < out_depth; out_z++) {{
+            int z = out_z * stride_d;
+            if (z >= depth) continue;
+            for (int out_i = 0; out_i < out_height; out_i++) {{
+                int i = out_i * stride_h;
+                if (i >= height) continue;
+                for (int out_j = 0; out_j < out_width; out_j++) {{
+                    int j = out_j * stride_w;
+                    if (j >= width) continue;
+
+                    int nz = 0, ni = 0, nj = 0, ez = depth, ei = height, ej = width;
+                    if (!causal_d) {{
+                        NATTEN_GET_WINDOW_START(nz, z, depth, K, NH, dilation_d);
+                        NATTEN_GET_WINDOW_END(ez, nz, depth, K, dilation_d);
+                    }}
+                    if (!causal_h) {{
+                        NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation_h);
+                        NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation_h);
+                    }}
+                    if (!causal_w) {{
+                        NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation_w);
+                        NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
+                    }}
+
+                    int neighbor_idx = 0;
+                    for (int kz = 0; kz < K; kz++) {{
+                        for (int ki = 0; ki < K; ki++) {{
+                            for (int kj = 0; kj < K; kj++) {{
+                                int cand_z = (causal_d ? (z - (K - 1) * dilation_d) : nz) + kz * dilation_d;
+                                int cand_i = (causal_h ? (i - (K - 1) * dilation_h) : ni) + ki * dilation_h;
+                                int cand_j = (causal_w ? (j - (K - 1) * dilation_w) : nj) + kj * dilation_w;
+                                bool valid_z = causal_d
+                                    ? (cand_z >= 0 && cand_z <= z && cand_z < depth)
+                                    : (cand_z >= 0 && cand_z < ez);
+                                bool valid_i = causal_h
+                                    ? (cand_i >= 0 && cand_i <= i && cand_i < height)
+                                    : (cand_i >= 0 && cand_i < ei);
+                                bool valid_j = causal_w
+                                    ? (cand_j >= 0 && cand_j <= j && cand_j < width)
+                                    : (cand_j >= 0 && cand_j < ej);
+                                if (valid_z && valid_i && valid_j
+                                    && cand_z == val_z && cand_i == val_i && cand_j == val_j) {{
+                                    int a_idx = (((((b * heads + h) * out_depth + out_z) * out_height + out_i) * out_width + out_j) * L + neighbor_idx);
+                                    int g_idx = (((((b * heads + h) * out_depth + out_z) * out_height + out_i) * out_width + out_j) * dim + d);
+                                    acc += attention_probs[a_idx] * grad_out[g_idx];
+                                }}
+                                neighbor_idx++;
+                            }}
+                        }}
+                    }}
+                }}
+            }}
+        }}
+        int out_idx = (((((b * heads + h) * depth + val_z) * height + val_i) * width + val_j) * dim + d);
+        grad_v[out_idx] = acc;
     }}
 }}
 """

@@ -73,7 +73,7 @@ Compat shims preserve API names and signatures where possible, but tensor types 
 
 - `tests/test_upstream_parity.py` compares v0.14 functional outputs against official `natten==0.14.6`.
 - Upstream parity suite also includes split-path gradient parity checks (1D/2D) against official v0.14.
-- CI workflow: `.github/workflows/upstream-parity.yml`.
+- Required CI job: `upstream-parity-required` in `.github/workflows/backend-matrix.yml`.
 - Local run:
 
 ```bash
@@ -91,10 +91,18 @@ NATTEN_UPSTREAM_PARITY=1 uv run python -m pytest tests/test_upstream_parity.py -
   - `NATTEN_BACKEND=nanobind`
 - Includes a required upstream parity job (`NATTEN_UPSTREAM_PARITY=1`) in the same workflow.
 - Includes benchmark smoke run with JSON artifact upload and non-failing perf warnings.
+- Includes a required backward perf guardrail (fast backends must maintain minimum speedup vs pure).
+  - Required CI gate uses sequential median-of-medians aggregation (`--rounds 3`) for stability.
 - Local benchmark smoke run:
 
 ```bash
 uv run python benchmarks/backend_smoke.py --output benchmarks/backend-smoke.json --github-warnings
+```
+
+- Local backward perf guardrail run:
+
+```bash
+uv run python benchmarks/backward_perf_guardrail.py --output benchmarks/backward-guardrail.json --min-speedup 1.20
 ```
 
 ## Final Performance Table
@@ -108,16 +116,18 @@ Snapshot generated from this repo on:
 uv run python benchmarks/final_perf_table.py --warmup 5 --trials 25 --output-json benchmarks/final-perf.json --output-md benchmarks/final-perf.md
 ```
 
+Benchmarks report trimmed statistics by default (`--trim-head 2`) to reduce cold-trial noise; JSON artifacts also retain full raw metrics (`raw_*`).
+
 Median latency table (ms, lower is better):
 
 | Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal speedup vs pure | nanobind speedup vs pure |
 |---|---:|---:|---:|---:|---:|---:|
-| `na1d_k7_s1_d1_noncausal` | `forward` | 0.806 | 0.203 | 0.183 | 3.97x | 4.42x |
-| `na1d_k7_s1_d1_noncausal` | `backward` | 0.866 | 0.317 | 0.315 | 2.73x | 2.75x |
-| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.850 | 0.680 | 0.669 | 2.72x | 2.76x |
-| `na2d_k7x7_s1_d1_noncausal` | `backward` | 1.830 | 0.743 | 0.729 | 2.46x | 2.51x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.844 | 0.304 | 0.306 | 2.78x | 2.76x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.985 | 0.389 | 0.387 | 2.53x | 2.55x |
+| `na1d_k7_s1_d1_noncausal` | `forward` | 0.427 | 0.211 | 0.205 | 2.02x | 2.08x |
+| `na1d_k7_s1_d1_noncausal` | `backward` | 0.483 | 0.333 | 0.335 | 1.45x | 1.44x |
+| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.457 | 0.681 | 0.654 | 2.14x | 2.23x |
+| `na2d_k7x7_s1_d1_noncausal` | `backward` | 1.862 | 0.756 | 0.723 | 2.46x | 2.58x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.819 | 0.321 | 0.315 | 2.56x | 2.60x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.979 | 0.393 | 0.402 | 2.49x | 2.43x |
 
 Raw artifacts are written to:
 - `benchmarks/final-perf.json`
@@ -167,6 +177,7 @@ Backward support across backends uses explicit backend backward entrypoints for 
 ## Runtime Notes
 
 - Nanobind tier delegates to fast-metal where available (same exact eligibility constraints), otherwise pure fallback.
+- Experimental AV-backward fusion kernels exist for research (`NATTEN_MLX_AV_BWD_FUSION=1`), but default remains split AV backward kernels because they currently benchmark faster.
 - MLX lazy evaluation applies; this package does not force evaluation.
 
 ## License

@@ -3,28 +3,37 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import os
 
 import mlx.core as mx
+import numpy as np
 
 from . import pure
 from ._metal_sources import (
     source_1d_av,
     source_1d_av_backward_attn,
+    source_1d_av_backward_fused,
     source_1d_av_backward_v,
+    source_1d_av_backward_v_vec4,
     source_1d_fused,
     source_1d_qk,
     source_1d_qk_backward_q,
     source_1d_qk_backward_k,
+    source_1d_qk_backward_k_inverse,
     source_2d_av,
     source_2d_av_backward_attn,
+    source_2d_av_backward_fused,
     source_2d_av_backward_v,
+    source_2d_av_backward_v_vec4,
     source_2d_fused,
     source_2d_qk,
     source_2d_qk_backward_q,
     source_2d_qk_backward_k,
     source_3d_av,
     source_3d_av_backward_attn,
+    source_3d_av_backward_fused,
     source_3d_av_backward_v,
+    source_3d_av_backward_v_vec4,
     source_3d_fused,
     source_3d_qk,
     source_3d_qk_backward_q,
@@ -42,20 +51,32 @@ _FUSED_1D_KERNELS: dict[int, Callable] = {}
 _FUSED_2D_KERNELS: dict[int, Callable] = {}
 _FUSED_3D_KERNELS: dict[int, Callable] = {}
 _QK_BWD_K_1D_KERNELS: dict[int, Callable] = {}
+_QK_BWD_K_INV_1D_KERNELS: dict[int, Callable] = {}
 _QK_BWD_Q_1D_KERNELS: dict[int, Callable] = {}
 _AV_BWD_V_1D_KERNELS: dict[int, Callable] = {}
+_AV_BWD_V4_1D_KERNELS: dict[int, Callable] = {}
 _AV_BWD_ATTN_1D_KERNELS: dict[int, Callable] = {}
+_AV_BWD_FUSED_1D_KERNELS: dict[int, Callable] = {}
 _QK_BWD_K_2D_KERNELS: dict[int, Callable] = {}
 _QK_BWD_Q_2D_KERNELS: dict[int, Callable] = {}
 _AV_BWD_V_2D_KERNELS: dict[int, Callable] = {}
+_AV_BWD_V4_2D_KERNELS: dict[int, Callable] = {}
 _AV_BWD_ATTN_2D_KERNELS: dict[int, Callable] = {}
+_AV_BWD_FUSED_2D_KERNELS: dict[int, Callable] = {}
 _QK_BWD_K_3D_KERNELS: dict[int, Callable] = {}
 _QK_BWD_Q_3D_KERNELS: dict[int, Callable] = {}
 _AV_BWD_V_3D_KERNELS: dict[int, Callable] = {}
+_AV_BWD_V4_3D_KERNELS: dict[int, Callable] = {}
 _AV_BWD_ATTN_3D_KERNELS: dict[int, Callable] = {}
+_AV_BWD_FUSED_3D_KERNELS: dict[int, Callable] = {}
 _RPB_1D_CACHE: dict[tuple[int, int], mx.array] = {}
 _RPB_2D_CACHE: dict[tuple[int, int], mx.array] = {}
 _RPB_3D_CACHE: dict[tuple[int, int], mx.array] = {}
+_INV_MAP_1D_CACHE: dict[tuple, tuple[mx.array, mx.array, mx.array]] = {}
+_INV_MAP_1D_QK_CACHE: dict[tuple, tuple[mx.array, mx.array, mx.array]] = {}
+_INV_MAP_2D_CACHE: dict[tuple, tuple[mx.array, mx.array, mx.array]] = {}
+_INV_MAP_3D_CACHE: dict[tuple, tuple[mx.array, mx.array, mx.array]] = {}
+_USE_AV_BWD_FUSION = os.getenv("NATTEN_MLX_AV_BWD_FUSION", "").strip() == "1"
 
 
 def is_available() -> bool:
@@ -99,6 +120,55 @@ def _threadgroup_1d_heavy(length: int) -> tuple[int, int, int]:
 def _threadgroup_2d_heavy(height: int, width: int) -> tuple[int, int, int]:
     # Keep backward kernels on 8x8 groups for better occupancy on heavy loops.
     return (min(max(width, 1), 8), min(max(height, 1), 8), 1)
+
+
+def _threadgroup_grad_v(dim: int, values: int) -> tuple[int, int, int]:
+    # grad_v kernels map x->channel and y->value index.
+    d = max(dim, 1)
+    v = max(values, 1)
+    if d >= 32:
+        return (min(d, 32), min(v, 4), 1)
+    if d >= 16:
+        return (min(d, 16), min(v, 8), 1)
+    return (min(d, 8), min(v, 8), 1)
+
+
+def _threadgroup_grad_v_1d_vec4(dim4: int, values: int) -> tuple[int, int, int]:
+    # 1D vec4 grad_v path is more stable with slightly wider x and reduced y.
+    return (min(max(dim4 * 2, 1), 16), min(max(values, 1), 8), 1)
+
+
+def _threadgroup_grad_v_2d_vec4(dim4: int, values: int) -> tuple[int, int, int]:
+    # 2D vec4 grad_v tends to run best with narrower x and wider y.
+    x = 4 if dim4 >= 4 else max(dim4, 1)
+    return (x, min(max(values, 1), 32), 1)
+
+
+def _threadgroup_grad_v_3d_vec4(dim4: int, values: int) -> tuple[int, int, int]:
+    # 3D vec4 grad_v benefits from a wider x lane utilization.
+    x = min(max(dim4 * 2, 1), 8)
+    return (x, min(max(values, 1), 32), 1)
+
+
+def _threadgroup_1d_qk_bwd_k_inverse(dim: int, length: int) -> tuple[int, int, int]:
+    # Inverse-map grad_k uses x->channel and y->token. Wider y helps at long
+    # lengths once per-thread edge loops become dominant.
+    d = max(dim, 1)
+    l = max(length, 1)
+    if d >= 64 and l >= 1024:
+        return (8, 16, 1)
+    if d >= 64 and l >= 512:
+        return (16, 8, 1)
+    return _threadgroup_grad_v(d, l)
+
+
+def _use_vec4_1d_grad_v(length: int, head_dim: int) -> bool:
+    if head_dim % 4 != 0 or head_dim < 16:
+        return False
+    # Empirically, (L<=128, D=32) can be slower on vec4 in end-to-end backward.
+    if head_dim == 32 and length <= 128:
+        return False
+    return True
 
 
 def _to_metal_1d(x: mx.array) -> mx.array:
@@ -152,6 +222,270 @@ def _zero_rpb_3d(heads: int, kernel_size: int, dtype: mx.Dtype) -> mx.array:
         size = 2 * kernel_size - 1
         _RPB_3D_CACHE[key] = mx.zeros((heads, size, size, size), dtype=dtype)
     return _RPB_3D_CACHE[key]
+
+
+def _build_inverse_csr(
+    *,
+    value_indices: np.ndarray,
+    out_indices: np.ndarray,
+    neighbor_indices: np.ndarray,
+    num_values: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if value_indices.size == 0:
+        offsets = np.zeros((num_values + 1,), dtype=np.int32)
+        return offsets, np.zeros((0,), dtype=np.int32), np.zeros((0,), dtype=np.int32)
+
+    order = np.argsort(value_indices, kind="stable")
+    vals = value_indices[order].astype(np.int32, copy=False)
+    out_ids = out_indices[order].astype(np.int32, copy=False)
+    nbr_ids = neighbor_indices[order].astype(np.int32, copy=False)
+
+    counts = np.bincount(vals, minlength=num_values).astype(np.int32, copy=False)
+    offsets = np.zeros((num_values + 1,), dtype=np.int32)
+    offsets[1:] = np.cumsum(counts, dtype=np.int64).astype(np.int32, copy=False)
+    return offsets, out_ids, nbr_ids
+
+
+def _to_compact_index_array(indices: np.ndarray) -> mx.array:
+    if indices.size == 0:
+        return mx.array(indices.astype(np.uint16, copy=False), dtype=mx.uint16)
+    max_index = int(indices.max())
+    if max_index <= np.iinfo(np.uint16).max:
+        return mx.array(indices.astype(np.uint16, copy=False), dtype=mx.uint16)
+    return mx.array(indices.astype(np.int32, copy=False), dtype=mx.int32)
+
+
+def _inverse_map_1d(
+    length: int,
+    out_len: int,
+    kernel_size: int,
+    stride: int,
+    dilation: int,
+    causal: bool,
+    dim: int,
+):
+    key = (length, out_len, kernel_size, stride, dilation, causal, dim)
+    cached = _INV_MAP_1D_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    qpos = (np.arange(out_len, dtype=np.int32) * stride).astype(np.int32)
+    idx, valid = pure._compute_axis_indices(qpos, length, kernel_size, dilation, causal)
+    flat_valid = valid.reshape(-1)
+    value_indices = idx.reshape(-1)[flat_valid].astype(np.int32, copy=False)
+    out_indices = np.repeat(np.arange(out_len, dtype=np.int32), kernel_size)[flat_valid]
+    neighbor_indices = np.tile(np.arange(kernel_size, dtype=np.int32), out_len)[flat_valid]
+    offsets, out_ids, nbr_ids = _build_inverse_csr(
+        value_indices=value_indices,
+        out_indices=out_indices,
+        neighbor_indices=neighbor_indices,
+        num_values=length,
+    )
+    attn_base = (out_ids * kernel_size + nbr_ids).astype(np.int32, copy=False)
+    grad_base = (out_ids * dim).astype(np.int32, copy=False)
+    result = (
+        mx.array(offsets, dtype=mx.int32),
+        _to_compact_index_array(attn_base),
+        _to_compact_index_array(grad_base),
+    )
+    _INV_MAP_1D_CACHE[key] = result
+    return result
+
+
+def _inverse_map_1d_qk(
+    length: int,
+    out_len: int,
+    kernel_size: int,
+    stride: int,
+    dilation: int,
+    causal: bool,
+    dim: int,
+):
+    key = (length, out_len, kernel_size, stride, dilation, causal, dim)
+    cached = _INV_MAP_1D_QK_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    qpos = (np.arange(out_len, dtype=np.int32) * stride).astype(np.int32)
+    idx, valid = pure._compute_axis_indices(qpos, length, kernel_size, dilation, causal)
+    flat_valid = valid.reshape(-1)
+    value_indices = idx.reshape(-1)[flat_valid].astype(np.int32, copy=False)
+    out_indices = np.repeat(np.arange(out_len, dtype=np.int32), kernel_size)[flat_valid]
+    neighbor_indices = np.tile(np.arange(kernel_size, dtype=np.int32), out_len)[flat_valid]
+    offsets, out_ids, nbr_ids = _build_inverse_csr(
+        value_indices=value_indices,
+        out_indices=out_indices,
+        neighbor_indices=neighbor_indices,
+        num_values=length,
+    )
+    attn_base = (out_ids * kernel_size + nbr_ids).astype(np.int32, copy=False)
+    query_base = (out_ids * stride * dim).astype(np.int32, copy=False)
+    result = (
+        mx.array(offsets, dtype=mx.int32),
+        _to_compact_index_array(attn_base),
+        _to_compact_index_array(query_base),
+    )
+    _INV_MAP_1D_QK_CACHE[key] = result
+    return result
+
+
+def _inverse_map_2d(
+    height: int,
+    width: int,
+    out_h: int,
+    out_w: int,
+    kernel_h: int,
+    kernel_w: int,
+    stride_h: int,
+    stride_w: int,
+    dilation_h: int,
+    dilation_w: int,
+    causal_h: bool,
+    causal_w: bool,
+    dim: int,
+):
+    key = (
+        height,
+        width,
+        out_h,
+        out_w,
+        kernel_h,
+        kernel_w,
+        stride_h,
+        stride_w,
+        dilation_h,
+        dilation_w,
+        causal_h,
+        causal_w,
+        dim,
+    )
+    cached = _INV_MAP_2D_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    qh = (np.arange(out_h, dtype=np.int32) * stride_h).astype(np.int32)
+    qw = (np.arange(out_w, dtype=np.int32) * stride_w).astype(np.int32)
+    h_idx, h_valid = pure._compute_axis_indices(qh, height, kernel_h, dilation_h, causal_h)
+    w_idx, w_valid = pure._compute_axis_indices(qw, width, kernel_w, dilation_w, causal_w)
+
+    k_area = kernel_h * kernel_w
+    lin = (
+        h_idx[:, None, :, None].astype(np.int32) * width
+        + w_idx[None, :, None, :].astype(np.int32)
+    ).reshape(out_h, out_w, k_area)
+    valid = (h_valid[:, None, :, None] & w_valid[None, :, None, :]).reshape(out_h, out_w, k_area)
+
+    out_flat = np.arange(out_h * out_w, dtype=np.int32).reshape(out_h, out_w, 1)
+    out_indices = np.broadcast_to(out_flat, (out_h, out_w, k_area)).reshape(-1)
+    neighbor_indices = np.broadcast_to(np.arange(k_area, dtype=np.int32), (out_h, out_w, k_area)).reshape(-1)
+    mask = valid.reshape(-1)
+    offsets, out_ids, nbr_ids = _build_inverse_csr(
+        value_indices=lin.reshape(-1)[mask].astype(np.int32, copy=False),
+        out_indices=out_indices[mask],
+        neighbor_indices=neighbor_indices[mask],
+        num_values=height * width,
+    )
+    attn_base = (out_ids * k_area + nbr_ids).astype(np.int32, copy=False)
+    grad_base = (out_ids * dim).astype(np.int32, copy=False)
+    result = (
+        mx.array(offsets, dtype=mx.int32),
+        _to_compact_index_array(attn_base),
+        _to_compact_index_array(grad_base),
+    )
+    _INV_MAP_2D_CACHE[key] = result
+    return result
+
+
+def _inverse_map_3d(
+    depth: int,
+    height: int,
+    width: int,
+    out_d: int,
+    out_h: int,
+    out_w: int,
+    kernel_d: int,
+    kernel_h: int,
+    kernel_w: int,
+    stride_d: int,
+    stride_h: int,
+    stride_w: int,
+    dilation_d: int,
+    dilation_h: int,
+    dilation_w: int,
+    causal_d: bool,
+    causal_h: bool,
+    causal_w: bool,
+    dim: int,
+):
+    key = (
+        depth,
+        height,
+        width,
+        out_d,
+        out_h,
+        out_w,
+        kernel_d,
+        kernel_h,
+        kernel_w,
+        stride_d,
+        stride_h,
+        stride_w,
+        dilation_d,
+        dilation_h,
+        dilation_w,
+        causal_d,
+        causal_h,
+        causal_w,
+        dim,
+    )
+    cached = _INV_MAP_3D_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    qd = (np.arange(out_d, dtype=np.int32) * stride_d).astype(np.int32)
+    qh = (np.arange(out_h, dtype=np.int32) * stride_h).astype(np.int32)
+    qw = (np.arange(out_w, dtype=np.int32) * stride_w).astype(np.int32)
+
+    d_idx, d_valid = pure._compute_axis_indices(qd, depth, kernel_d, dilation_d, causal_d)
+    h_idx, h_valid = pure._compute_axis_indices(qh, height, kernel_h, dilation_h, causal_h)
+    w_idx, w_valid = pure._compute_axis_indices(qw, width, kernel_w, dilation_w, causal_w)
+
+    volume = kernel_d * kernel_h * kernel_w
+    lin = (
+        (
+            d_idx[:, None, None, :, None, None].astype(np.int32) * height
+            + h_idx[None, :, None, None, :, None].astype(np.int32)
+        )
+        * width
+        + w_idx[None, None, :, None, None, :].astype(np.int32)
+    ).reshape(out_d, out_h, out_w, volume)
+    valid = (
+        d_valid[:, None, None, :, None, None]
+        & h_valid[None, :, None, None, :, None]
+        & w_valid[None, None, :, None, None, :]
+    ).reshape(out_d, out_h, out_w, volume)
+
+    out_flat = np.arange(out_d * out_h * out_w, dtype=np.int32).reshape(out_d, out_h, out_w, 1)
+    out_indices = np.broadcast_to(out_flat, (out_d, out_h, out_w, volume)).reshape(-1)
+    neighbor_indices = np.broadcast_to(
+        np.arange(volume, dtype=np.int32), (out_d, out_h, out_w, volume)
+    ).reshape(-1)
+    mask = valid.reshape(-1)
+    offsets, out_ids, nbr_ids = _build_inverse_csr(
+        value_indices=lin.reshape(-1)[mask].astype(np.int32, copy=False),
+        out_indices=out_indices[mask],
+        neighbor_indices=neighbor_indices[mask],
+        num_values=depth * height * width,
+    )
+    attn_base = (out_ids * volume + nbr_ids).astype(np.int32, copy=False)
+    grad_base = (out_ids * dim).astype(np.int32, copy=False)
+    result = (
+        mx.array(offsets, dtype=mx.int32),
+        _to_compact_index_array(attn_base),
+        _to_compact_index_array(grad_base),
+    )
+    _INV_MAP_3D_CACHE[key] = result
+    return result
 
 
 def _get_1d_qk_kernel(kernel_size: int):
@@ -305,6 +639,25 @@ def _get_1d_qk_backward_k_kernel(kernel_size: int):
     return _QK_BWD_K_1D_KERNELS[kernel_size]
 
 
+def _get_1d_qk_backward_k_inverse_kernel(kernel_size: int):
+    if kernel_size not in _QK_BWD_K_INV_1D_KERNELS:
+        _QK_BWD_K_INV_1D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na1d_qk_bwd_k_inv_k{kernel_size}",
+            input_names=[
+                "grad_attn",
+                "query",
+                "inv_offsets",
+                "inv_attn_base",
+                "inv_query_base",
+                "scale_param",
+            ],
+            output_names=["out"],
+            source=source_1d_qk_backward_k_inverse(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _QK_BWD_K_INV_1D_KERNELS[kernel_size]
+
+
 def _get_1d_qk_backward_q_kernel(kernel_size: int):
     if kernel_size not in _QK_BWD_Q_1D_KERNELS:
         _QK_BWD_Q_1D_KERNELS[kernel_size] = mx.fast.metal_kernel(
@@ -332,15 +685,34 @@ def _get_1d_av_backward_v_kernel(kernel_size: int):
                 "attention_probs",
                 "grad_out",
                 "target_shape_param",
-                "stride_param",
-                "dilation_param",
-                "causal_param",
+                "inv_offsets",
+                "inv_attn_base",
+                "inv_grad_base",
             ],
             output_names=["out"],
             source=source_1d_av_backward_v(kernel_size),
             ensure_row_contiguous=True,
         )
     return _AV_BWD_V_1D_KERNELS[kernel_size]
+
+
+def _get_1d_av_backward_v_vec4_kernel(kernel_size: int):
+    if kernel_size not in _AV_BWD_V4_1D_KERNELS:
+        _AV_BWD_V4_1D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na1d_av_bwd_v4_k{kernel_size}",
+            input_names=[
+                "attention_probs",
+                "grad_out",
+                "target_shape_param",
+                "inv_offsets",
+                "inv_attn_base",
+                "inv_grad_base",
+            ],
+            output_names=["out"],
+            source=source_1d_av_backward_v_vec4(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _AV_BWD_V4_1D_KERNELS[kernel_size]
 
 
 def _get_1d_av_backward_attn_kernel(kernel_size: int):
@@ -360,6 +732,26 @@ def _get_1d_av_backward_attn_kernel(kernel_size: int):
             ensure_row_contiguous=True,
         )
     return _AV_BWD_ATTN_1D_KERNELS[kernel_size]
+
+
+def _get_1d_av_backward_fused_kernel(kernel_size: int):
+    if kernel_size not in _AV_BWD_FUSED_1D_KERNELS:
+        _AV_BWD_FUSED_1D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na1d_av_bwd_fused_k{kernel_size}",
+            input_names=[
+                "attention_probs",
+                "value",
+                "grad_out",
+                "target_shape_param",
+                "stride_param",
+                "dilation_param",
+                "causal_param",
+            ],
+            output_names=["grad_attn", "grad_v"],
+            source=source_1d_av_backward_fused(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _AV_BWD_FUSED_1D_KERNELS[kernel_size]
 
 
 def _get_2d_qk_backward_k_kernel(kernel_size: int):
@@ -408,15 +800,34 @@ def _get_2d_av_backward_v_kernel(kernel_size: int):
                 "attention_probs",
                 "grad_out",
                 "target_shape_param",
-                "stride_param",
-                "dilation_param",
-                "causal_param",
+                "inv_offsets",
+                "inv_attn_base",
+                "inv_grad_base",
             ],
             output_names=["out"],
             source=source_2d_av_backward_v(kernel_size),
             ensure_row_contiguous=True,
         )
     return _AV_BWD_V_2D_KERNELS[kernel_size]
+
+
+def _get_2d_av_backward_v_vec4_kernel(kernel_size: int):
+    if kernel_size not in _AV_BWD_V4_2D_KERNELS:
+        _AV_BWD_V4_2D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na2d_av_bwd_v4_k{kernel_size}",
+            input_names=[
+                "attention_probs",
+                "grad_out",
+                "target_shape_param",
+                "inv_offsets",
+                "inv_attn_base",
+                "inv_grad_base",
+            ],
+            output_names=["out"],
+            source=source_2d_av_backward_v_vec4(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _AV_BWD_V4_2D_KERNELS[kernel_size]
 
 
 def _get_2d_av_backward_attn_kernel(kernel_size: int):
@@ -436,6 +847,26 @@ def _get_2d_av_backward_attn_kernel(kernel_size: int):
             ensure_row_contiguous=True,
         )
     return _AV_BWD_ATTN_2D_KERNELS[kernel_size]
+
+
+def _get_2d_av_backward_fused_kernel(kernel_size: int):
+    if kernel_size not in _AV_BWD_FUSED_2D_KERNELS:
+        _AV_BWD_FUSED_2D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na2d_av_bwd_fused_k{kernel_size}",
+            input_names=[
+                "attention_probs",
+                "value",
+                "grad_out",
+                "target_shape_param",
+                "stride_param",
+                "dilation_param",
+                "causal_param",
+            ],
+            output_names=["grad_attn", "grad_v"],
+            source=source_2d_av_backward_fused(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _AV_BWD_FUSED_2D_KERNELS[kernel_size]
 
 
 def _get_3d_qk_backward_k_kernel(kernel_size: int):
@@ -484,15 +915,34 @@ def _get_3d_av_backward_v_kernel(kernel_size: int):
                 "attention_probs",
                 "grad_out",
                 "target_shape_param",
-                "stride_param",
-                "dilation_param",
-                "causal_param",
+                "inv_offsets",
+                "inv_attn_base",
+                "inv_grad_base",
             ],
             output_names=["out"],
             source=source_3d_av_backward_v(kernel_size),
             ensure_row_contiguous=True,
         )
     return _AV_BWD_V_3D_KERNELS[kernel_size]
+
+
+def _get_3d_av_backward_v_vec4_kernel(kernel_size: int):
+    if kernel_size not in _AV_BWD_V4_3D_KERNELS:
+        _AV_BWD_V4_3D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na3d_av_bwd_v4_k{kernel_size}",
+            input_names=[
+                "attention_probs",
+                "grad_out",
+                "target_shape_param",
+                "inv_offsets",
+                "inv_attn_base",
+                "inv_grad_base",
+            ],
+            output_names=["out"],
+            source=source_3d_av_backward_v_vec4(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _AV_BWD_V4_3D_KERNELS[kernel_size]
 
 
 def _get_3d_av_backward_attn_kernel(kernel_size: int):
@@ -512,6 +962,26 @@ def _get_3d_av_backward_attn_kernel(kernel_size: int):
             ensure_row_contiguous=True,
         )
     return _AV_BWD_ATTN_3D_KERNELS[kernel_size]
+
+
+def _get_3d_av_backward_fused_kernel(kernel_size: int):
+    if kernel_size not in _AV_BWD_FUSED_3D_KERNELS:
+        _AV_BWD_FUSED_3D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na3d_av_bwd_fused_k{kernel_size}",
+            input_names=[
+                "attention_probs",
+                "value",
+                "grad_out",
+                "target_shape_param",
+                "stride_param",
+                "dilation_param",
+                "causal_param",
+            ],
+            output_names=["grad_attn", "grad_v"],
+            source=source_3d_av_backward_fused(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _AV_BWD_FUSED_3D_KERNELS[kernel_size]
 
 
 def _is_valid_kernel_size(kernel_size: int) -> bool:
@@ -1155,11 +1625,27 @@ def na1d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
             output_shapes=[(batch, heads, length, head_dim)],
             output_dtypes=[mx.float32],
         )[0]
-        grad_k_kernel = _get_1d_qk_backward_k_kernel(ksize)
+        inv_offsets, inv_attn_base, inv_query_base = _inverse_map_1d_qk(
+            length=length,
+            out_len=out_len,
+            kernel_size=ksize,
+            stride=step,
+            dilation=dil,
+            causal=causal,
+            dim=head_dim,
+        )
+        grad_k_kernel = _get_1d_qk_backward_k_inverse_kernel(ksize)
         grad_k_m = grad_k_kernel(
-            inputs=[grad_attn_m, q_m, stride_param, dilation_param, causal_param, scale_param],
-            grid=(length, 1, batch * heads),
-            threadgroup=_threadgroup_1d_heavy(length),
+            inputs=[
+                grad_attn_m,
+                q_m,
+                inv_offsets,
+                inv_attn_base,
+                inv_query_base,
+                scale_param,
+            ],
+            grid=(head_dim, length, batch * heads),
+            threadgroup=_threadgroup_1d_qk_bwd_k_inverse(head_dim, length),
             output_shapes=[(batch, heads, length, head_dim)],
             output_dtypes=[mx.float32],
         )[0]
@@ -1192,37 +1678,77 @@ def na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
         stride_param = mx.array([step], dtype=mx.int32)
         dilation_param = mx.array([dil], dtype=mx.int32)
         causal_param = mx.array([1 if causal else 0], dtype=mx.int32)
-        grad_attn_kernel = _get_1d_av_backward_attn_kernel(ksize)
-        grad_attn_m = grad_attn_kernel(
-            inputs=[
-                grad_out_m,
-                v_m,
-                target_shape_param,
-                stride_param,
-                dilation_param,
-                causal_param,
-            ],
-            grid=(out_len, 1, batch * heads),
-            threadgroup=_threadgroup_1d_heavy(out_len),
-            output_shapes=[(batch, heads, out_len, ksize)],
-            output_dtypes=[mx.float32],
-        )[0]
-        attn_m = _to_metal_1d(_cast(attn, mx.float32))
-        grad_v_kernel = _get_1d_av_backward_v_kernel(ksize)
-        grad_v_m = grad_v_kernel(
-            inputs=[
-                attn_m,
-                grad_out_m,
-                target_shape_param,
-                stride_param,
-                dilation_param,
-                causal_param,
-            ],
-            grid=(length, 1, batch * heads),
-            threadgroup=_threadgroup_1d_heavy(length),
-            output_shapes=[(batch, heads, length, head_dim)],
-            output_dtypes=[mx.float32],
-        )[0]
+        if _USE_AV_BWD_FUSION:
+            attn_m = _to_metal_1d(_cast(attn, mx.float32))
+            fused_kernel = _get_1d_av_backward_fused_kernel(ksize)
+            max_len = max(length, out_len)
+            grad_attn_m, grad_v_m = fused_kernel(
+                inputs=[
+                    attn_m,
+                    v_m,
+                    grad_out_m,
+                    target_shape_param,
+                    stride_param,
+                    dilation_param,
+                    causal_param,
+                ],
+                grid=(max_len, 1, batch * heads),
+                threadgroup=_threadgroup_1d_heavy(max_len),
+                output_shapes=[(batch, heads, out_len, ksize), (batch, heads, length, head_dim)],
+                output_dtypes=[mx.float32, mx.float32],
+            )
+        else:
+            grad_attn_kernel = _get_1d_av_backward_attn_kernel(ksize)
+            grad_attn_m = grad_attn_kernel(
+                inputs=[
+                    grad_out_m,
+                    v_m,
+                    target_shape_param,
+                    stride_param,
+                    dilation_param,
+                    causal_param,
+                ],
+                grid=(out_len, 1, batch * heads),
+                threadgroup=_threadgroup_1d_heavy(out_len),
+                output_shapes=[(batch, heads, out_len, ksize)],
+                output_dtypes=[mx.float32],
+            )[0]
+            attn_m = _to_metal_1d(_cast(attn, mx.float32))
+            inv_offsets, inv_attn_base, inv_grad_base = _inverse_map_1d(
+                length=length,
+                out_len=out_len,
+                kernel_size=ksize,
+                stride=step,
+                dilation=dil,
+                causal=causal,
+                dim=head_dim,
+            )
+            use_vec4 = _use_vec4_1d_grad_v(length, head_dim)
+            grad_v_kernel = (
+                _get_1d_av_backward_v_vec4_kernel(ksize)
+                if use_vec4
+                else _get_1d_av_backward_v_kernel(ksize)
+            )
+            grad_v_x = head_dim // 4 if use_vec4 else head_dim
+            grad_v_tg = (
+                _threadgroup_grad_v_1d_vec4(grad_v_x, length)
+                if use_vec4
+                else _threadgroup_grad_v(grad_v_x, length)
+            )
+            grad_v_m = grad_v_kernel(
+                inputs=[
+                    attn_m,
+                    grad_out_m,
+                    target_shape_param,
+                    inv_offsets,
+                    inv_attn_base,
+                    inv_grad_base,
+                ],
+                grid=(grad_v_x, length, batch * heads),
+                threadgroup=grad_v_tg,
+                output_shapes=[(batch, heads, length, head_dim)],
+                output_dtypes=[mx.float32],
+            )[0]
         grad_attn = _cast(_from_metal_1d(grad_attn_m), attn.dtype)
         grad_v = _cast(_from_metal_1d(grad_v_m), v.dtype)
         return grad_attn, grad_v
@@ -1309,37 +1835,87 @@ def na2d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
             [1 if bool(is_causal[0]) else 0, 1 if bool(is_causal[1]) else 0],
             dtype=mx.int32,
         )
-        grad_attn_kernel = _get_2d_av_backward_attn_kernel(int(kernel_size[0]))
-        grad_attn_m = grad_attn_kernel(
-            inputs=[
-                grad_out_m,
-                v_m,
-                target_shape_param,
-                stride_param,
-                dilation_param,
-                causal_param,
-            ],
-            grid=(out_w, out_h, batch * heads),
-            threadgroup=_threadgroup_2d_heavy(out_h, out_w),
-            output_shapes=[(batch, heads, out_h, out_w, area)],
-            output_dtypes=[mx.float32],
-        )[0]
-        attn_m = _to_metal_2d(_cast(attn, mx.float32))
-        grad_v_kernel = _get_2d_av_backward_v_kernel(int(kernel_size[0]))
-        grad_v_m = grad_v_kernel(
-            inputs=[
-                attn_m,
-                grad_out_m,
-                target_shape_param,
-                stride_param,
-                dilation_param,
-                causal_param,
-            ],
-            grid=(width, height, batch * heads),
-            threadgroup=_threadgroup_2d_heavy(height, width),
-            output_shapes=[(batch, heads, height, width, head_dim)],
-            output_dtypes=[mx.float32],
-        )[0]
+        if _USE_AV_BWD_FUSION:
+            attn_m = _to_metal_2d(_cast(attn, mx.float32))
+            fused_kernel = _get_2d_av_backward_fused_kernel(int(kernel_size[0]))
+            max_h = max(height, out_h)
+            max_w = max(width, out_w)
+            grad_attn_m, grad_v_m = fused_kernel(
+                inputs=[
+                    attn_m,
+                    v_m,
+                    grad_out_m,
+                    target_shape_param,
+                    stride_param,
+                    dilation_param,
+                    causal_param,
+                ],
+                grid=(max_w, max_h, batch * heads),
+                threadgroup=_threadgroup_2d_heavy(max_h, max_w),
+                output_shapes=[
+                    (batch, heads, out_h, out_w, area),
+                    (batch, heads, height, width, head_dim),
+                ],
+                output_dtypes=[mx.float32, mx.float32],
+            )
+        else:
+            grad_attn_kernel = _get_2d_av_backward_attn_kernel(int(kernel_size[0]))
+            grad_attn_m = grad_attn_kernel(
+                inputs=[
+                    grad_out_m,
+                    v_m,
+                    target_shape_param,
+                    stride_param,
+                    dilation_param,
+                    causal_param,
+                ],
+                grid=(out_w, out_h, batch * heads),
+                threadgroup=_threadgroup_2d_heavy(out_h, out_w),
+                output_shapes=[(batch, heads, out_h, out_w, area)],
+                output_dtypes=[mx.float32],
+            )[0]
+            attn_m = _to_metal_2d(_cast(attn, mx.float32))
+            inv_offsets, inv_attn_base, inv_grad_base = _inverse_map_2d(
+                height=height,
+                width=width,
+                out_h=out_h,
+                out_w=out_w,
+                kernel_h=int(kernel_size[0]),
+                kernel_w=int(kernel_size[1]),
+                stride_h=int(stride[0]),
+                stride_w=int(stride[1]),
+                dilation_h=int(dilation[0]),
+                dilation_w=int(dilation[1]),
+                causal_h=bool(is_causal[0]),
+                causal_w=bool(is_causal[1]),
+                dim=head_dim,
+            )
+            use_vec4 = (head_dim % 4 == 0) and (head_dim >= 16)
+            grad_v_kernel = (
+                _get_2d_av_backward_v_vec4_kernel(int(kernel_size[0]))
+                if use_vec4
+                else _get_2d_av_backward_v_kernel(int(kernel_size[0]))
+            )
+            grad_v_x = head_dim // 4 if use_vec4 else head_dim
+            grad_v_tg = (
+                _threadgroup_grad_v_2d_vec4(grad_v_x, height * width)
+                if use_vec4
+                else _threadgroup_grad_v(grad_v_x, height * width)
+            )
+            grad_v_m = grad_v_kernel(
+                inputs=[
+                    attn_m,
+                    grad_out_m,
+                    target_shape_param,
+                    inv_offsets,
+                    inv_attn_base,
+                    inv_grad_base,
+                ],
+                grid=(grad_v_x, height * width, batch * heads),
+                threadgroup=grad_v_tg,
+                output_shapes=[(batch, heads, height, width, head_dim)],
+                output_dtypes=[mx.float32],
+            )[0]
         grad_attn = _cast(_from_metal_2d(grad_attn_m), attn.dtype)
         grad_v = _cast(_from_metal_2d(grad_v_m), v.dtype)
         return grad_attn, grad_v
@@ -1451,37 +2027,94 @@ def na3d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
             ],
             dtype=mx.int32,
         )
-        grad_attn_kernel = _get_3d_av_backward_attn_kernel(int(kernel_size[0]))
-        grad_attn_m = grad_attn_kernel(
-            inputs=[
-                grad_out_m,
-                v_m,
-                target_shape_param,
-                stride_param,
-                dilation_param,
-                causal_param,
-            ],
-            grid=(out_w, out_h, batch * heads * out_d),
-            threadgroup=_threadgroup_2d_heavy(out_h, out_w),
-            output_shapes=[(batch, heads, out_d, out_h, out_w, volume)],
-            output_dtypes=[mx.float32],
-        )[0]
-        attn_m = _to_metal_3d(_cast(attn, mx.float32))
-        grad_v_kernel = _get_3d_av_backward_v_kernel(int(kernel_size[0]))
-        grad_v_m = grad_v_kernel(
-            inputs=[
-                attn_m,
-                grad_out_m,
-                target_shape_param,
-                stride_param,
-                dilation_param,
-                causal_param,
-            ],
-            grid=(width, height, batch * heads * depth),
-            threadgroup=_threadgroup_2d_heavy(height, width),
-            output_shapes=[(batch, heads, depth, height, width, head_dim)],
-            output_dtypes=[mx.float32],
-        )[0]
+        if _USE_AV_BWD_FUSION:
+            attn_m = _to_metal_3d(_cast(attn, mx.float32))
+            fused_kernel = _get_3d_av_backward_fused_kernel(int(kernel_size[0]))
+            max_d = max(depth, out_d)
+            max_h = max(height, out_h)
+            max_w = max(width, out_w)
+            grad_attn_m, grad_v_m = fused_kernel(
+                inputs=[
+                    attn_m,
+                    v_m,
+                    grad_out_m,
+                    target_shape_param,
+                    stride_param,
+                    dilation_param,
+                    causal_param,
+                ],
+                grid=(max_w, max_h, batch * heads * max_d),
+                threadgroup=_threadgroup_2d_heavy(max_h, max_w),
+                output_shapes=[
+                    (batch, heads, out_d, out_h, out_w, volume),
+                    (batch, heads, depth, height, width, head_dim),
+                ],
+                output_dtypes=[mx.float32, mx.float32],
+            )
+        else:
+            grad_attn_kernel = _get_3d_av_backward_attn_kernel(int(kernel_size[0]))
+            grad_attn_m = grad_attn_kernel(
+                inputs=[
+                    grad_out_m,
+                    v_m,
+                    target_shape_param,
+                    stride_param,
+                    dilation_param,
+                    causal_param,
+                ],
+                grid=(out_w, out_h, batch * heads * out_d),
+                threadgroup=_threadgroup_2d_heavy(out_h, out_w),
+                output_shapes=[(batch, heads, out_d, out_h, out_w, volume)],
+                output_dtypes=[mx.float32],
+            )[0]
+            attn_m = _to_metal_3d(_cast(attn, mx.float32))
+            inv_offsets, inv_attn_base, inv_grad_base = _inverse_map_3d(
+                depth=depth,
+                height=height,
+                width=width,
+                out_d=out_d,
+                out_h=out_h,
+                out_w=out_w,
+                kernel_d=int(kernel_size[0]),
+                kernel_h=int(kernel_size[1]),
+                kernel_w=int(kernel_size[2]),
+                stride_d=int(stride[0]),
+                stride_h=int(stride[1]),
+                stride_w=int(stride[2]),
+                dilation_d=int(dilation[0]),
+                dilation_h=int(dilation[1]),
+                dilation_w=int(dilation[2]),
+                causal_d=bool(is_causal[0]),
+                causal_h=bool(is_causal[1]),
+                causal_w=bool(is_causal[2]),
+                dim=head_dim,
+            )
+            use_vec4 = (head_dim % 4 == 0) and (head_dim >= 16)
+            grad_v_kernel = (
+                _get_3d_av_backward_v_vec4_kernel(int(kernel_size[0]))
+                if use_vec4
+                else _get_3d_av_backward_v_kernel(int(kernel_size[0]))
+            )
+            grad_v_x = head_dim // 4 if use_vec4 else head_dim
+            grad_v_tg = (
+                _threadgroup_grad_v_3d_vec4(grad_v_x, depth * height * width)
+                if use_vec4
+                else _threadgroup_grad_v(grad_v_x, depth * height * width)
+            )
+            grad_v_m = grad_v_kernel(
+                inputs=[
+                    attn_m,
+                    grad_out_m,
+                    target_shape_param,
+                    inv_offsets,
+                    inv_attn_base,
+                    inv_grad_base,
+                ],
+                grid=(grad_v_x, depth * height * width, batch * heads),
+                threadgroup=grad_v_tg,
+                output_shapes=[(batch, heads, depth, height, width, head_dim)],
+                output_dtypes=[mx.float32],
+            )[0]
         grad_attn = _cast(_from_metal_3d(grad_attn_m), attn.dtype)
         grad_v = _cast(_from_metal_3d(grad_v_m), v.dtype)
         return grad_attn, grad_v
