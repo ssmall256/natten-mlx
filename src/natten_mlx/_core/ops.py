@@ -54,6 +54,10 @@ def na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
     return _backend_module().na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
 
 
+def na3d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
+    return _backend_module().na3d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
+
+
 def na1d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
     return _backend_module().na1d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale)
 
@@ -68,6 +72,14 @@ def na2d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
 
 def na2d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
     return _backend_module().na2d_av_forward(attn, v, kernel_size, stride, dilation, is_causal)
+
+
+def na3d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
+    return _backend_module().na3d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale)
+
+
+def na3d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
+    return _backend_module().na3d_av_forward(attn, v, kernel_size, stride, dilation, is_causal)
 
 
 def _backend_fn_or_pure(name: str):
@@ -88,6 +100,11 @@ def na2d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, s
     return fn(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale)
 
 
+def na3d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale):
+    fn = _backend_fn_or_pure("na3d_backward")
+    return fn(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale)
+
+
 def na1d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale):
     fn = _backend_fn_or_pure("na1d_qk_backward")
     return fn(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale)
@@ -105,6 +122,16 @@ def na2d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
 
 def na2d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal):
     fn = _backend_fn_or_pure("na2d_av_backward")
+    return fn(attn, v, grad_out, kernel_size, stride, dilation, is_causal)
+
+
+def na3d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale):
+    fn = _backend_fn_or_pure("na3d_qk_backward")
+    return fn(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale)
+
+
+def na3d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal):
+    fn = _backend_fn_or_pure("na3d_av_backward")
     return fn(attn, v, grad_out, kernel_size, stride, dilation, is_causal)
 
 

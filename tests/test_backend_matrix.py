@@ -4,7 +4,8 @@ import pytest
 mx = pytest.importorskip("mlx.core")
 
 from natten_mlx import na1d, na2d, set_backend
-from natten_mlx.nn import NeighborhoodAttention1D, NeighborhoodAttention2D
+from natten_mlx.functional import na3d
+from natten_mlx.nn import NeighborhoodAttention1D, NeighborhoodAttention2D, NeighborhoodAttention3D
 
 
 def _run_backend(backend: str, fn):
@@ -142,6 +143,42 @@ def test_backend_forced_matches_pure_expanded_fused_na2d(backend: str):
 
 
 @pytest.mark.parametrize("backend", ["pure", "fast_metal", "nanobind"])
+def test_backend_forced_matches_pure_na3d_stride_causal(backend: str):
+    q = mx.random.normal((1, 9, 8, 7, 2, 3))
+    k = mx.random.normal((1, 9, 8, 7, 2, 3))
+    v = mx.random.normal((1, 9, 8, 7, 2, 3))
+
+    out_pure = _run_backend(
+        "pure",
+        lambda: na3d(
+            q,
+            k,
+            v,
+            kernel_size=(3, 3, 3),
+            stride=(2, 3, 2),
+            dilation=(2, 1, 1),
+            is_causal=(True, False, True),
+            scale=0.29,
+        ),
+    )
+    out_backend = _run_backend(
+        backend,
+        lambda: na3d(
+            q,
+            k,
+            v,
+            kernel_size=(3, 3, 3),
+            stride=(2, 3, 2),
+            dilation=(2, 1, 1),
+            is_causal=(True, False, True),
+            scale=0.29,
+        ),
+    )
+    mx.eval(out_pure, out_backend)
+    np.testing.assert_allclose(np.array(out_backend), np.array(out_pure), rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("backend", ["pure", "fast_metal", "nanobind"])
 def test_backend_forced_attn_drop_causal_stride_smoke(backend: str):
     x1 = mx.random.normal((2, 11, 16))
     x2 = mx.random.normal((2, 7, 5, 12))
@@ -173,6 +210,28 @@ def test_backend_forced_attn_drop_causal_stride_smoke(backend: str):
     assert y2.shape == (2, 4, 5, 12)
     assert np.isfinite(np.array(y1)).all()
     assert np.isfinite(np.array(y2)).all()
+
+
+@pytest.mark.parametrize("backend", ["pure", "fast_metal", "nanobind"])
+def test_backend_forced_attn_drop_causal_stride_3d_smoke(backend: str):
+    x = mx.random.normal((2, 7, 6, 5, 12))
+
+    def _run():
+        layer = NeighborhoodAttention3D(
+            embed_dim=12,
+            num_heads=3,
+            kernel_size=(3, 3, 3),
+            stride=(2, 1, 2),
+            is_causal=(True, False, True),
+            attn_drop=0.2,
+        )
+        y = layer(x)
+        mx.eval(y)
+        return y
+
+    y = _run_backend(backend, _run)
+    assert y.shape == (2, 4, 6, 3, 12)
+    assert np.isfinite(np.array(y)).all()
 
 
 @pytest.mark.parametrize("backend", ["pure", "fast_metal", "nanobind"])

@@ -12,6 +12,12 @@ from .ops import (
     na2d_forward,
     na2d_qk_backward,
     na2d_qk_forward,
+    na3d_av_backward,
+    na3d_av_forward,
+    na3d_backward,
+    na3d_forward,
+    na3d_qk_backward,
+    na3d_qk_forward,
     set_backend,
 )
 
@@ -28,6 +34,12 @@ __all__ = [
     "na2d_qk_backward",
     "na2d_av_forward",
     "na2d_av_backward",
+    "na3d_forward",
+    "na3d_backward",
+    "na3d_qk_forward",
+    "na3d_qk_backward",
+    "na3d_av_forward",
+    "na3d_av_backward",
     "get_backend",
     "set_backend",
 ]

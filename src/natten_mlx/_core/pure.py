@@ -106,6 +106,52 @@ def _compute_neighbor_indices_2d(
     return mx.array(lin, dtype=mx.int32), mx.array(valid, dtype=mx.bool_)
 
 
+def _compute_neighbor_indices_3d(
+    depth: int,
+    height: int,
+    width: int,
+    kernel_size: tuple[int, int, int],
+    dilation: tuple[int, int, int],
+    is_causal: tuple[bool, bool, bool],
+    query_d: np.ndarray | None = None,
+    query_h: np.ndarray | None = None,
+    query_w: np.ndarray | None = None,
+) -> tuple[mx.array, mx.array]:
+    """Compute 3D neighbor linear indices and validity mask."""
+    if query_d is None:
+        query_d = np.arange(depth, dtype=np.int32)
+    if query_h is None:
+        query_h = np.arange(height, dtype=np.int32)
+    if query_w is None:
+        query_w = np.arange(width, dtype=np.int32)
+
+    kd, kh, kw = kernel_size
+    dd, dh, dw = dilation
+    causal_d, causal_h, causal_w = is_causal
+
+    d_idx, d_valid = _compute_axis_indices(query_d, depth, kd, dd, causal_d)
+    h_idx, h_valid = _compute_axis_indices(query_h, height, kh, dh, causal_h)
+    w_idx, w_valid = _compute_axis_indices(query_w, width, kw, dw, causal_w)
+
+    lin = (
+        (
+            d_idx[:, None, None, :, None, None].astype(np.int32) * height
+            + h_idx[None, :, None, None, :, None].astype(np.int32)
+        )
+        * width
+        + w_idx[None, None, :, None, None, :].astype(np.int32)
+    )
+    valid = (
+        d_valid[:, None, None, :, None, None]
+        & h_valid[None, :, None, None, :, None]
+        & w_valid[None, None, :, None, None, :]
+    )
+
+    lin = lin.reshape(len(query_d), len(query_h), len(query_w), kd * kh * kw)
+    valid = valid.reshape(len(query_d), len(query_h), len(query_w), kd * kh * kw)
+    return mx.array(lin, dtype=mx.int32), mx.array(valid, dtype=mx.bool_)
+
+
 def na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
     """Fused 1D neighborhood attention."""
     batch, seqlen, heads, head_dim = q.shape
@@ -202,6 +248,13 @@ def na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
 
     weights = mx.softmax(logits, axis=-1)
     return mx.sum(weights[..., None] * v_neighbors, axis=-2)
+
+
+def na3d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
+    """Fused 3D neighborhood attention."""
+    logits = na3d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale)
+    weights = mx.softmax(logits, axis=-1)
+    return na3d_av_forward(weights, v, kernel_size, stride, dilation, is_causal)
 
 
 def na1d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
@@ -350,6 +403,99 @@ def na2d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
     return mx.sum(masked_attn[..., None] * v_neighbors, axis=-2)
 
 
+def na3d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
+    """Separate 3D QK operation returning attention logits."""
+    batch, depth, height, width, heads, head_dim = q.shape
+    kd, kh, kw = kernel_size
+    sd, sh, sw = stride
+    kernel_volume = kd * kh * kw
+    scale_value = head_dim ** -0.5 if scale is None else float(scale)
+
+    qd_np = _query_positions(depth, sd)
+    qh_np = _query_positions(height, sh)
+    qw_np = _query_positions(width, sw)
+    qd = mx.array(qd_np, dtype=mx.int32)
+    qh = mx.array(qh_np, dtype=mx.int32)
+    qw = mx.array(qw_np, dtype=mx.int32)
+    out_d = len(qd_np)
+    out_h = len(qh_np)
+    out_w = len(qw_np)
+
+    q_depth = mx.take(q, qd, axis=1)
+    q_rows = mx.take(q_depth, qh, axis=2)
+    q_sel = mx.take(q_rows, qw, axis=3)
+
+    indices, valid = _compute_neighbor_indices_3d(
+        depth,
+        height,
+        width,
+        kernel_size,
+        dilation,
+        is_causal=(bool(is_causal[0]), bool(is_causal[1]), bool(is_causal[2])),
+        query_d=qd_np,
+        query_h=qh_np,
+        query_w=qw_np,
+    )
+
+    k_flat = mx.reshape(k, (batch, depth * height * width, heads, head_dim))
+    flat_idx = mx.reshape(indices, (-1,))
+    k_neighbors = mx.take(k_flat, flat_idx, axis=1)
+    k_neighbors = mx.reshape(
+        k_neighbors, (batch, out_d, out_h, out_w, kernel_volume, heads, head_dim)
+    )
+    k_neighbors = mx.transpose(k_neighbors, axes=(0, 1, 2, 3, 5, 4, 6))
+
+    logits = mx.sum(q_sel[..., None, :] * k_neighbors, axis=-1) * scale_value
+    valid_mask = valid[None, :, :, :, None, :]
+    neg_inf = mx.full(logits.shape, -float("inf"), dtype=logits.dtype)
+    return mx.where(valid_mask, logits, neg_inf)
+
+
+def na3d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
+    """Separate 3D AV operation."""
+    batch, out_d, out_h, out_w, heads, kernel_volume = attn.shape
+    _, depth, height, width, _, head_dim = v.shape
+
+    if kernel_volume != kernel_size[0] * kernel_size[1] * kernel_size[2]:
+        raise ValueError(
+            "attn neighborhood dimension must equal kernel volume; "
+            f"got {kernel_volume} vs {kernel_size[0] * kernel_size[1] * kernel_size[2]}"
+        )
+
+    qd_np = _query_positions(depth, stride[0])
+    qh_np = _query_positions(height, stride[1])
+    qw_np = _query_positions(width, stride[2])
+    if out_d != len(qd_np) or out_h != len(qh_np) or out_w != len(qw_np):
+        raise ValueError(
+            "attn spatial dimensions must match ceil(input/stride); "
+            f"got ({out_d}, {out_h}, {out_w}) vs ({len(qd_np)}, {len(qh_np)}, {len(qw_np)})"
+        )
+
+    indices, valid = _compute_neighbor_indices_3d(
+        depth,
+        height,
+        width,
+        kernel_size,
+        dilation,
+        is_causal=(bool(is_causal[0]), bool(is_causal[1]), bool(is_causal[2])),
+        query_d=qd_np,
+        query_h=qh_np,
+        query_w=qw_np,
+    )
+
+    v_flat = mx.reshape(v, (batch, depth * height * width, heads, head_dim))
+    flat_idx = mx.reshape(indices, (-1,))
+    v_neighbors = mx.take(v_flat, flat_idx, axis=1)
+    v_neighbors = mx.reshape(
+        v_neighbors, (batch, out_d, out_h, out_w, kernel_volume, heads, head_dim)
+    )
+    v_neighbors = mx.transpose(v_neighbors, axes=(0, 1, 2, 3, 5, 4, 6))
+
+    valid_mask = valid[None, :, :, :, None, :]
+    masked_attn = mx.where(valid_mask, attn, mx.zeros(attn.shape, dtype=attn.dtype))
+    return mx.sum(masked_attn[..., None] * v_neighbors, axis=-2)
+
+
 def na1d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale):
     def _loss_q(q_in):
         out = na1d_forward(q_in, k, v, kernel_size, stride, dilation, is_causal, scale)
@@ -377,6 +523,22 @@ def na2d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, s
 
     def _loss_v(v_in):
         out = na2d_forward(q, k, v_in, kernel_size, stride, dilation, is_causal, scale)
+        return mx.sum(out * grad_out)
+
+    return mx.grad(_loss_q)(q), mx.grad(_loss_k)(k), mx.grad(_loss_v)(v)
+
+
+def na3d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale):
+    def _loss_q(q_in):
+        out = na3d_forward(q_in, k, v, kernel_size, stride, dilation, is_causal, scale)
+        return mx.sum(out * grad_out)
+
+    def _loss_k(k_in):
+        out = na3d_forward(q, k_in, v, kernel_size, stride, dilation, is_causal, scale)
+        return mx.sum(out * grad_out)
+
+    def _loss_v(v_in):
+        out = na3d_forward(q, k, v_in, kernel_size, stride, dilation, is_causal, scale)
         return mx.sum(out * grad_out)
 
     return mx.grad(_loss_q)(q), mx.grad(_loss_k)(k), mx.grad(_loss_v)(v)
@@ -425,6 +587,30 @@ def na2d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
 
     def _loss_v(v_in):
         out = na2d_av_forward(attn, v_in, kernel_size, stride, dilation, is_causal)
+        return mx.sum(out * grad_out)
+
+    return mx.grad(_loss_attn)(attn), mx.grad(_loss_v)(v)
+
+
+def na3d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale):
+    def _loss_q(q_in):
+        out = na3d_qk_forward(q_in, k, kernel_size, stride, dilation, is_causal, scale)
+        return mx.sum(out * grad_attn)
+
+    def _loss_k(k_in):
+        out = na3d_qk_forward(q, k_in, kernel_size, stride, dilation, is_causal, scale)
+        return mx.sum(out * grad_attn)
+
+    return mx.grad(_loss_q)(q), mx.grad(_loss_k)(k)
+
+
+def na3d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal):
+    def _loss_attn(attn_in):
+        out = na3d_av_forward(attn_in, v, kernel_size, stride, dilation, is_causal)
+        return mx.sum(out * grad_out)
+
+    def _loss_v(v_in):
+        out = na3d_av_forward(attn, v_in, kernel_size, stride, dilation, is_causal)
         return mx.sum(out * grad_out)
 
     return mx.grad(_loss_attn)(attn), mx.grad(_loss_v)(v)

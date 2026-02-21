@@ -66,6 +66,10 @@ def _area(kernel_size: int) -> int:
     return kernel_size * kernel_size
 
 
+def _volume(kernel_size: int) -> int:
+    return kernel_size * kernel_size * kernel_size
+
+
 def source_1d_qk(kernel_size: int) -> str:
     nh = _nh(kernel_size)
     return _HELPERS + f"""
@@ -250,6 +254,127 @@ for (int d = 0; d < dim; d++) {{
 """
 
 
+def source_3d_qk(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    volume = _volume(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int depth = query_shape[2];
+const int height = query_shape[3];
+const int width = query_shape[4];
+const int dim = query_shape[5];
+const int dilation = (int)dilation_param[0];
+const int K = {kernel_size};
+const int NH = {nh};
+const int L = {volume};
+
+int z = gid.z % depth;
+int bh = gid.z / depth;
+int b = bh / heads;
+int h = bh % heads;
+int i = gid.y;
+int j = gid.x;
+if (b >= batch_size || h >= heads || z >= depth || i >= height || j >= width) return;
+
+int nz, ni, nj, ez, ei, ej, pz, pi, pj;
+NATTEN_GET_WINDOW_START(nz, z, depth, K, NH, dilation);
+NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation);
+NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation);
+NATTEN_GET_WINDOW_END(ez, nz, depth, K, dilation);
+NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation);
+NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation);
+NATTEN_GET_PB_START(pz, z, depth, K, NH, dilation);
+NATTEN_GET_PB_START(pi, i, height, K, NH, dilation);
+NATTEN_GET_PB_START(pj, j, width, K, NH, dilation);
+
+int neighbor_idx = 0;
+for (int kz = 0; kz < K; kz++) {{
+    for (int ki = 0; ki < K; ki++) {{
+        for (int kj = 0; kj < K; kj++) {{
+            int key_z = nz + kz * dilation;
+            int key_i = ni + ki * dilation;
+            int key_j = nj + kj * dilation;
+            float score;
+            if (key_z >= 0 && key_z < ez && key_i >= 0 && key_i < ei && key_j >= 0 && key_j < ej) {{
+                float sum = 0.0f;
+                for (int d = 0; d < dim; d++) {{
+                    int q_idx = ((((b * heads + h) * depth + z) * height + i) * width + j) * dim + d;
+                    int k_idx = ((((b * heads + h) * depth + key_z) * height + key_i) * width + key_j) * dim + d;
+                    sum += query[q_idx] * key[k_idx];
+                }}
+                int rpb_size = (2 * K - 1);
+                int rpb_idx = ((h * rpb_size + (pz + kz)) * rpb_size + (pi + ki)) * rpb_size + (pj + kj);
+                score = sum + rpb[rpb_idx];
+            }} else {{
+                score = -INFINITY;
+            }}
+            int out_idx = ((((b * heads + h) * depth + z) * height + i) * width + j) * L + neighbor_idx;
+            out[out_idx] = score;
+            neighbor_idx++;
+        }}
+    }}
+}}
+"""
+
+
+def source_3d_av(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    volume = _volume(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = attention_probs_shape[0];
+const int heads = attention_probs_shape[1];
+const int depth = attention_probs_shape[2];
+const int height = attention_probs_shape[3];
+const int width = attention_probs_shape[4];
+const int dim = value_shape[5];
+const int dilation = (int)dilation_param[0];
+const int K = {kernel_size};
+const int NH = {nh};
+const int L = {volume};
+
+int z = gid.z % depth;
+int bh = gid.z / depth;
+int b = bh / heads;
+int h = bh % heads;
+int i = gid.y;
+int j = gid.x;
+if (b >= batch_size || h >= heads || z >= depth || i >= height || j >= width) return;
+
+int nz, ni, nj, ez, ei, ej;
+NATTEN_GET_WINDOW_START(nz, z, depth, K, NH, dilation);
+NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation);
+NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation);
+NATTEN_GET_WINDOW_END(ez, nz, depth, K, dilation);
+NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation);
+NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation);
+
+for (int d = 0; d < dim; d++) {{
+    float sum = 0.0f;
+    int neighbor_idx = 0;
+    for (int kz = 0; kz < K; kz++) {{
+        for (int ki = 0; ki < K; ki++) {{
+            for (int kj = 0; kj < K; kj++) {{
+                int val_z = nz + kz * dilation;
+                int val_i = ni + ki * dilation;
+                int val_j = nj + kj * dilation;
+                if (val_z >= 0 && val_z < ez && val_i >= 0 && val_i < ei && val_j >= 0 && val_j < ej) {{
+                    int attn_idx = ((((b * heads + h) * depth + z) * height + i) * width + j) * L + neighbor_idx;
+                    int val_idx = ((((b * heads + h) * depth + val_z) * height + val_i) * width + val_j) * dim + d;
+                    sum += attention_probs[attn_idx] * value[val_idx];
+                }}
+                neighbor_idx++;
+            }}
+        }}
+    }}
+    int out_idx = ((((b * heads + h) * depth + z) * height + i) * width + j) * dim + d;
+    out[out_idx] = sum;
+}}
+"""
+
+
 def source_1d_fused(kernel_size: int) -> str:
     nh = _nh(kernel_size)
     return _HELPERS + f"""
@@ -258,8 +383,8 @@ const int batch_size = query_shape[0];
 const int heads = query_shape[1];
 const int length = query_shape[2];
 const int dim = query_shape[3];
-const int out_length = out_shape[2];
 const int stride = (int)stride_param[0];
+const int out_length = (length + stride - 1) / stride;
 const int dilation = (int)dilation_param[0];
 const bool causal = ((int)causal_param[0]) != 0;
 const float scale = scale_param[0];
@@ -341,10 +466,10 @@ const int heads = query_shape[1];
 const int height = query_shape[2];
 const int width = query_shape[3];
 const int dim = query_shape[4];
-const int out_height = out_shape[2];
-const int out_width = out_shape[3];
 const int stride_h = (int)stride_param[0];
 const int stride_w = (int)stride_param[1];
+const int out_height = (height + stride_h - 1) / stride_h;
+const int out_width = (width + stride_w - 1) / stride_w;
 const int dilation_h = (int)dilation_param[0];
 const int dilation_w = (int)dilation_param[1];
 const bool causal_h = ((int)causal_param[0]) != 0;

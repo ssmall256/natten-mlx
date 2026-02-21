@@ -80,6 +80,43 @@ def test_v015_v017_fused_na1d_gradients_exist(compat_module):
     assert grad_v.shape == v.shape
 
 
+@pytest.mark.parametrize("compat_module", [v015, v017])
+def test_v015_v017_fused_na3d_gradients_exist(compat_module):
+    q = mx.random.normal((1, 6, 7, 8, 2, 3))
+    k = mx.random.normal((1, 6, 7, 8, 2, 3))
+    v = mx.random.normal((1, 6, 7, 8, 2, 3))
+
+    def _f(q_in, k_in, v_in):
+        return compat_module.na3d(
+            q_in,
+            k_in,
+            v_in,
+            kernel_size=(3, 3, 3),
+            dilation=(1, 2, 1),
+            is_causal=(True, False, False),
+            scale=0.41,
+        )
+
+    target = mx.ones((1, 6, 7, 8, 2, 3), dtype=q.dtype)
+
+    def _loss_q(q_in):
+        return mx.sum(_f(q_in, k, v) * target)
+
+    def _loss_k(k_in):
+        return mx.sum(_f(q, k_in, v) * target)
+
+    def _loss_v(v_in):
+        return mx.sum(_f(q, k, v_in) * target)
+
+    grad_q = mx.grad(_loss_q)(q)
+    grad_k = mx.grad(_loss_k)(k)
+    grad_v = mx.grad(_loss_v)(v)
+    mx.eval(grad_q, grad_k, grad_v)
+    assert grad_q.shape == q.shape
+    assert grad_k.shape == k.shape
+    assert grad_v.shape == v.shape
+
+
 def test_v020_fused_na1d_gradients_exist():
     q = mx.random.normal((1, 11, 2, 4))
     k = mx.random.normal((1, 11, 2, 4))
@@ -98,6 +135,43 @@ def test_v020_fused_na1d_gradients_exist():
         )
 
     target = mx.ones((1, 11, 2, 4), dtype=q.dtype)
+
+    def _loss_q(q_in):
+        return mx.sum(_f(q_in, k, v) * target)
+
+    def _loss_k(k_in):
+        return mx.sum(_f(q, k_in, v) * target)
+
+    def _loss_v(v_in):
+        return mx.sum(_f(q, k, v_in) * target)
+
+    grad_q = mx.grad(_loss_q)(q)
+    grad_k = mx.grad(_loss_k)(k)
+    grad_v = mx.grad(_loss_v)(v)
+    mx.eval(grad_q, grad_k, grad_v)
+    assert grad_q.shape == q.shape
+    assert grad_k.shape == k.shape
+    assert grad_v.shape == v.shape
+
+
+def test_v020_fused_na3d_gradients_exist():
+    q = mx.random.normal((1, 6, 7, 8, 2, 3))
+    k = mx.random.normal((1, 6, 7, 8, 2, 3))
+    v = mx.random.normal((1, 6, 7, 8, 2, 3))
+
+    def _f(q_in, k_in, v_in):
+        return v020.na3d(
+            q_in,
+            k_in,
+            v_in,
+            kernel_size=(3, 3, 3),
+            stride=(1, 1, 1),
+            dilation=(1, 1, 1),
+            is_causal=(False, False, False),
+            scale=0.35,
+        )
+
+    target = mx.ones((1, 6, 7, 8, 2, 3), dtype=q.dtype)
 
     def _loss_q(q_in):
         return mx.sum(_f(q_in, k, v) * target)

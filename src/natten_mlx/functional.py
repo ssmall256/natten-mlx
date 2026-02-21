@@ -13,6 +13,9 @@ from natten_mlx.autograd import (
     na2d_av_with_grad,
     na2d_qk_with_grad,
     na2d_with_grad,
+    na3d_av_with_grad,
+    na3d_qk_with_grad,
+    na3d_with_grad,
 )
 from natten_mlx.utils.params import (
     check_dilation_kernel_vs_input,
@@ -40,6 +43,21 @@ def _validate_2d_qkv(query: mx.array, key: mx.array, value: mx.array) -> tuple[i
     if key.shape != query.shape or value.shape != query.shape:
         raise ValueError(
             "query, key, and value must have the same shape for 2D attention; "
+            f"got {query.shape}, {key.shape}, {value.shape}"
+        )
+    return tuple(query.shape)
+
+
+def _validate_3d_qkv(
+    query: mx.array, key: mx.array, value: mx.array
+) -> tuple[int, int, int, int, int, int]:
+    if query.ndim != 6:
+        raise ValueError(
+            f"query must be 6D [B, D, H, W, heads, head_dim], got {query.shape}"
+        )
+    if key.shape != query.shape or value.shape != query.shape:
+        raise ValueError(
+            "query, key, and value must have the same shape for 3D attention; "
             f"got {query.shape}, {key.shape}, {value.shape}"
         )
     return tuple(query.shape)
@@ -99,6 +117,34 @@ def na2d(
     check_dilation_kernel_vs_input(dil, ks, (height, width))
 
     return na2d_with_grad(query, key, value, ks, st, dil, caus, scale)
+
+
+def na3d(
+    query: mx.array,
+    key: mx.array,
+    value: mx.array,
+    kernel_size: Union[int, Tuple[int, int, int]],
+    stride: Union[int, Tuple[int, int, int]] = 1,
+    dilation: Union[int, Tuple[int, int, int]] = 1,
+    is_causal: Union[bool, Tuple[bool, bool, bool]] = False,
+    scale: Optional[float] = None,
+) -> mx.array:
+    """3D neighborhood attention.
+
+    Layout: [batch, depth, height, width, heads, head_dim].
+    """
+    _, depth, height, width, _, _ = _validate_3d_qkv(query, key, value)
+
+    ks = normalize_kernel_size(kernel_size, 3)
+    st = normalize_tuple_param(stride, 3, "stride")
+    dil = normalize_tuple_param(dilation, 3, "dilation")
+    caus = normalize_tuple_param(is_causal, 3, "is_causal")
+
+    check_kernel_size_vs_input(ks, (depth, height, width))
+    check_stride_vs_kernel(st, ks)
+    check_dilation_kernel_vs_input(dil, ks, (depth, height, width))
+
+    return na3d_with_grad(query, key, value, ks, st, dil, caus, scale)
 
 
 def na1d_qk(
@@ -208,5 +254,68 @@ def na2d_av(
 
     return na2d_av_with_grad(attn, value, ks, st, dil, caus)
 
+def na3d_qk(
+    query: mx.array,
+    key: mx.array,
+    kernel_size,
+    dilation=1,
+    *,
+    stride=1,
+    is_causal=False,
+    scale: Optional[float] = None,
+) -> mx.array:
+    """Separate 3D query-key logits. Returns [B, Od, Oh, Ow, heads, Kd*Kh*Kw]."""
+    _, depth, height, width, _, _ = _validate_3d_qkv(query, key, key)
+    ks = normalize_kernel_size(kernel_size, 3)
+    st = normalize_tuple_param(stride, 3, "stride")
+    dil = normalize_tuple_param(dilation, 3, "dilation")
+    caus = normalize_tuple_param(is_causal, 3, "is_causal")
 
-__all__ = ["na1d", "na2d", "na1d_qk", "na1d_av", "na2d_qk", "na2d_av"]
+    check_kernel_size_vs_input(ks, (depth, height, width))
+    check_stride_vs_kernel(st, ks)
+    check_dilation_kernel_vs_input(dil, ks, (depth, height, width))
+
+    return na3d_qk_with_grad(query, key, ks, st, dil, caus, scale)
+
+
+def na3d_av(
+    attn: mx.array,
+    value: mx.array,
+    kernel_size,
+    dilation=1,
+    *,
+    stride=1,
+    is_causal=False,
+) -> mx.array:
+    """Separate 3D attention-value op."""
+    if attn.ndim != 6 or value.ndim != 6:
+        raise ValueError("attn and value must be 6D for na3d_av")
+    if attn.shape[0] != value.shape[0] or attn.shape[4] != value.shape[4]:
+        raise ValueError(
+            "attn and value must match batch and heads dimensions; "
+            f"got {attn.shape} and {value.shape}"
+        )
+
+    ks = normalize_kernel_size(kernel_size, 3)
+    st = normalize_tuple_param(stride, 3, "stride")
+    dil = normalize_tuple_param(dilation, 3, "dilation")
+    caus = normalize_tuple_param(is_causal, 3, "is_causal")
+
+    check_kernel_size_vs_input(ks, (value.shape[1], value.shape[2], value.shape[3]))
+    check_stride_vs_kernel(st, ks)
+    check_dilation_kernel_vs_input(dil, ks, (value.shape[1], value.shape[2], value.shape[3]))
+
+    return na3d_av_with_grad(attn, value, ks, st, dil, caus)
+
+
+__all__ = [
+    "na1d",
+    "na2d",
+    "na3d",
+    "na1d_qk",
+    "na1d_av",
+    "na2d_qk",
+    "na2d_av",
+    "na3d_qk",
+    "na3d_av",
+]
