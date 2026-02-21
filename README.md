@@ -94,6 +94,7 @@ NATTEN_UPSTREAM_PARITY=1 uv run python -m pytest tests/test_upstream_parity.py -
 - Includes a required backward perf guardrail (fast backends must maintain minimum speedup vs pure).
   - Required CI gate uses sequential median-of-medians aggregation (`--rounds 3`) for stability.
   - Guardrail covers baseline 1D/2D/3D plus decode-like 1D cases (causal and long non-causal).
+- Includes low-precision backend parity coverage (`tests/test_low_precision_backend_parity.py`) for `float16` and `bfloat16` (when available), with explicit tolerance thresholds and causal forward cases.
 - Local benchmark smoke run:
 
 ```bash
