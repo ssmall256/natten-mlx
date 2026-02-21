@@ -31,6 +31,7 @@ from ._metal_sources import (
     source_2d_qk_backward_q,
     source_2d_qk_backward_q_vec4,
     source_2d_qk_backward_k,
+    source_2d_qk_backward_k_inverse,
     source_3d_av,
     source_3d_av_backward_attn,
     source_3d_av_backward_fused,
@@ -41,6 +42,7 @@ from ._metal_sources import (
     source_3d_qk_backward_q,
     source_3d_qk_backward_q_vec4,
     source_3d_qk_backward_k,
+    source_3d_qk_backward_k_inverse,
 )
 
 _KERNEL_BUILD_FAILED = False
@@ -62,6 +64,7 @@ _AV_BWD_V4_1D_KERNELS: dict[int, Callable] = {}
 _AV_BWD_ATTN_1D_KERNELS: dict[int, Callable] = {}
 _AV_BWD_FUSED_1D_KERNELS: dict[int, Callable] = {}
 _QK_BWD_K_2D_KERNELS: dict[int, Callable] = {}
+_QK_BWD_K_INV_2D_KERNELS: dict[int, Callable] = {}
 _QK_BWD_Q_2D_KERNELS: dict[int, Callable] = {}
 _QK_BWD_Q4_2D_KERNELS: dict[int, Callable] = {}
 _AV_BWD_V_2D_KERNELS: dict[int, Callable] = {}
@@ -69,6 +72,7 @@ _AV_BWD_V4_2D_KERNELS: dict[int, Callable] = {}
 _AV_BWD_ATTN_2D_KERNELS: dict[int, Callable] = {}
 _AV_BWD_FUSED_2D_KERNELS: dict[int, Callable] = {}
 _QK_BWD_K_3D_KERNELS: dict[int, Callable] = {}
+_QK_BWD_K_INV_3D_KERNELS: dict[int, Callable] = {}
 _QK_BWD_Q_3D_KERNELS: dict[int, Callable] = {}
 _QK_BWD_Q4_3D_KERNELS: dict[int, Callable] = {}
 _AV_BWD_V_3D_KERNELS: dict[int, Callable] = {}
@@ -81,7 +85,9 @@ _RPB_3D_CACHE: dict[tuple[int, int], mx.array] = {}
 _INV_MAP_1D_CACHE: dict[tuple, tuple[mx.array, mx.array, mx.array]] = {}
 _INV_MAP_1D_QK_CACHE: dict[tuple, tuple[mx.array, mx.array, mx.array]] = {}
 _INV_MAP_2D_CACHE: dict[tuple, tuple[mx.array, mx.array, mx.array]] = {}
+_INV_MAP_2D_QK_CACHE: dict[tuple, tuple[mx.array, mx.array, mx.array]] = {}
 _INV_MAP_3D_CACHE: dict[tuple, tuple[mx.array, mx.array, mx.array]] = {}
+_INV_MAP_3D_QK_CACHE: dict[tuple, tuple[mx.array, mx.array, mx.array]] = {}
 _USE_AV_BWD_FUSION = os.getenv("NATTEN_MLX_AV_BWD_FUSION", "").strip() == "1"
 
 
@@ -416,6 +422,78 @@ def _inverse_map_2d(
     return result
 
 
+def _inverse_map_2d_qk(
+    height: int,
+    width: int,
+    out_h: int,
+    out_w: int,
+    kernel_h: int,
+    kernel_w: int,
+    stride_h: int,
+    stride_w: int,
+    dilation_h: int,
+    dilation_w: int,
+    causal_h: bool,
+    causal_w: bool,
+    dim: int,
+):
+    key = (
+        height,
+        width,
+        out_h,
+        out_w,
+        kernel_h,
+        kernel_w,
+        stride_h,
+        stride_w,
+        dilation_h,
+        dilation_w,
+        causal_h,
+        causal_w,
+        dim,
+    )
+    cached = _INV_MAP_2D_QK_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    qh = (np.arange(out_h, dtype=np.int32) * stride_h).astype(np.int32)
+    qw = (np.arange(out_w, dtype=np.int32) * stride_w).astype(np.int32)
+    h_idx, h_valid = pure._compute_axis_indices(qh, height, kernel_h, dilation_h, causal_h)
+    w_idx, w_valid = pure._compute_axis_indices(qw, width, kernel_w, dilation_w, causal_w)
+
+    k_area = kernel_h * kernel_w
+    lin = (
+        h_idx[:, None, :, None].astype(np.int32) * width
+        + w_idx[None, :, None, :].astype(np.int32)
+    ).reshape(out_h, out_w, k_area)
+    valid = (h_valid[:, None, :, None] & w_valid[None, :, None, :]).reshape(out_h, out_w, k_area)
+
+    out_flat = np.arange(out_h * out_w, dtype=np.int32).reshape(out_h, out_w, 1)
+    out_indices = np.broadcast_to(out_flat, (out_h, out_w, k_area)).reshape(-1)
+    neighbor_indices = np.broadcast_to(
+        np.arange(k_area, dtype=np.int32), (out_h, out_w, k_area)
+    ).reshape(-1)
+    mask = valid.reshape(-1)
+    offsets, out_ids, nbr_ids = _build_inverse_csr(
+        value_indices=lin.reshape(-1)[mask].astype(np.int32, copy=False),
+        out_indices=out_indices[mask],
+        neighbor_indices=neighbor_indices[mask],
+        num_values=height * width,
+    )
+    attn_base = (out_ids * k_area + nbr_ids).astype(np.int32, copy=False)
+    query_linear = (
+        (out_ids // out_w) * stride_h * width + (out_ids % out_w) * stride_w
+    ).astype(np.int32, copy=False)
+    query_base = (query_linear * dim).astype(np.int32, copy=False)
+    result = (
+        mx.array(offsets, dtype=mx.int32),
+        _to_compact_index_array(attn_base),
+        _to_compact_index_array(query_base),
+    )
+    _INV_MAP_2D_QK_CACHE[key] = result
+    return result
+
+
 def _inverse_map_3d(
     depth: int,
     height: int,
@@ -505,6 +583,106 @@ def _inverse_map_3d(
         _to_compact_index_array(grad_base),
     )
     _INV_MAP_3D_CACHE[key] = result
+    return result
+
+
+def _inverse_map_3d_qk(
+    depth: int,
+    height: int,
+    width: int,
+    out_d: int,
+    out_h: int,
+    out_w: int,
+    kernel_d: int,
+    kernel_h: int,
+    kernel_w: int,
+    stride_d: int,
+    stride_h: int,
+    stride_w: int,
+    dilation_d: int,
+    dilation_h: int,
+    dilation_w: int,
+    causal_d: bool,
+    causal_h: bool,
+    causal_w: bool,
+    dim: int,
+):
+    key = (
+        depth,
+        height,
+        width,
+        out_d,
+        out_h,
+        out_w,
+        kernel_d,
+        kernel_h,
+        kernel_w,
+        stride_d,
+        stride_h,
+        stride_w,
+        dilation_d,
+        dilation_h,
+        dilation_w,
+        causal_d,
+        causal_h,
+        causal_w,
+        dim,
+    )
+    cached = _INV_MAP_3D_QK_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    qd = (np.arange(out_d, dtype=np.int32) * stride_d).astype(np.int32)
+    qh = (np.arange(out_h, dtype=np.int32) * stride_h).astype(np.int32)
+    qw = (np.arange(out_w, dtype=np.int32) * stride_w).astype(np.int32)
+
+    d_idx, d_valid = pure._compute_axis_indices(qd, depth, kernel_d, dilation_d, causal_d)
+    h_idx, h_valid = pure._compute_axis_indices(qh, height, kernel_h, dilation_h, causal_h)
+    w_idx, w_valid = pure._compute_axis_indices(qw, width, kernel_w, dilation_w, causal_w)
+
+    volume = kernel_d * kernel_h * kernel_w
+    lin = (
+        (
+            d_idx[:, None, None, :, None, None].astype(np.int32) * height
+            + h_idx[None, :, None, None, :, None].astype(np.int32)
+        )
+        * width
+        + w_idx[None, None, :, None, None, :].astype(np.int32)
+    ).reshape(out_d, out_h, out_w, volume)
+    valid = (
+        d_valid[:, None, None, :, None, None]
+        & h_valid[None, :, None, None, :, None]
+        & w_valid[None, None, :, None, None, :]
+    ).reshape(out_d, out_h, out_w, volume)
+
+    out_flat = np.arange(out_d * out_h * out_w, dtype=np.int32).reshape(out_d, out_h, out_w, 1)
+    out_indices = np.broadcast_to(out_flat, (out_d, out_h, out_w, volume)).reshape(-1)
+    neighbor_indices = np.broadcast_to(
+        np.arange(volume, dtype=np.int32), (out_d, out_h, out_w, volume)
+    ).reshape(-1)
+    mask = valid.reshape(-1)
+    offsets, out_ids, nbr_ids = _build_inverse_csr(
+        value_indices=lin.reshape(-1)[mask].astype(np.int32, copy=False),
+        out_indices=out_indices[mask],
+        neighbor_indices=neighbor_indices[mask],
+        num_values=depth * height * width,
+    )
+    attn_base = (out_ids * volume + nbr_ids).astype(np.int32, copy=False)
+    out_hw = out_h * out_w
+    out_z = out_ids // out_hw
+    out_rem = out_ids % out_hw
+    out_i = out_rem // out_w
+    out_j = out_rem % out_w
+    query_linear = (
+        ((out_z * stride_d) * height + (out_i * stride_h)) * width + (out_j * stride_w)
+    ).astype(np.int32, copy=False)
+    query_base = (query_linear * dim).astype(np.int32, copy=False)
+    result = (
+        mx.array(offsets, dtype=mx.int32),
+        _to_compact_index_array(attn_base),
+        _to_compact_index_array(query_base),
+    )
+    _INV_MAP_3D_QK_CACHE[key] = result
     return result
 
 
@@ -812,6 +990,25 @@ def _get_2d_qk_backward_k_kernel(kernel_size: int):
     return _QK_BWD_K_2D_KERNELS[kernel_size]
 
 
+def _get_2d_qk_backward_k_inverse_kernel(kernel_size: int):
+    if kernel_size not in _QK_BWD_K_INV_2D_KERNELS:
+        _QK_BWD_K_INV_2D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na2d_qk_bwd_k_inv_k{kernel_size}",
+            input_names=[
+                "grad_attn",
+                "query",
+                "inv_offsets",
+                "inv_attn_base",
+                "inv_query_base",
+                "scale_param",
+            ],
+            output_names=["out"],
+            source=source_2d_qk_backward_k_inverse(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _QK_BWD_K_INV_2D_KERNELS[kernel_size]
+
+
 def _get_2d_qk_backward_q_kernel(kernel_size: int):
     if kernel_size not in _QK_BWD_Q_2D_KERNELS:
         _QK_BWD_Q_2D_KERNELS[kernel_size] = mx.fast.metal_kernel(
@@ -944,6 +1141,25 @@ def _get_3d_qk_backward_k_kernel(kernel_size: int):
             ensure_row_contiguous=True,
         )
     return _QK_BWD_K_3D_KERNELS[kernel_size]
+
+
+def _get_3d_qk_backward_k_inverse_kernel(kernel_size: int):
+    if kernel_size not in _QK_BWD_K_INV_3D_KERNELS:
+        _QK_BWD_K_INV_3D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na3d_qk_bwd_k_inv_k{kernel_size}",
+            input_names=[
+                "grad_attn",
+                "query",
+                "inv_offsets",
+                "inv_attn_base",
+                "inv_query_base",
+                "scale_param",
+            ],
+            output_names=["out"],
+            source=source_3d_qk_backward_k_inverse(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _QK_BWD_K_INV_3D_KERNELS[kernel_size]
 
 
 def _get_3d_qk_backward_q_kernel(kernel_size: int):
@@ -1895,11 +2111,26 @@ def na2d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
             output_shapes=[(batch, heads, height, width, head_dim)],
             output_dtypes=[mx.float32],
         )[0]
-        grad_k_kernel = _get_2d_qk_backward_k_kernel(kh)
+        inv_offsets, inv_attn_base, inv_query_base = _inverse_map_2d_qk(
+            height=height,
+            width=width,
+            out_h=out_h,
+            out_w=out_w,
+            kernel_h=kh,
+            kernel_w=kw,
+            stride_h=sh,
+            stride_w=sw,
+            dilation_h=int(dilation[0]),
+            dilation_w=int(dilation[1]),
+            causal_h=bool(is_causal[0]),
+            causal_w=bool(is_causal[1]),
+            dim=head_dim,
+        )
+        grad_k_kernel = _get_2d_qk_backward_k_inverse_kernel(kh)
         grad_k_m = grad_k_kernel(
-            inputs=[grad_attn_m, q_m, stride_param, dilation_param, causal_param, scale_param],
-            grid=(width, height, batch * heads),
-            threadgroup=_threadgroup_2d_heavy(height, width),
+            inputs=[grad_attn_m, q_m, inv_offsets, inv_attn_base, inv_query_base, scale_param],
+            grid=(head_dim, height * width, batch * heads),
+            threadgroup=_threadgroup_grad_v(head_dim, height * width),
             output_shapes=[(batch, heads, height, width, head_dim)],
             output_dtypes=[mx.float32],
         )[0]
@@ -2087,11 +2318,32 @@ def na3d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
             output_shapes=[(batch, heads, depth, height, width, head_dim)],
             output_dtypes=[mx.float32],
         )[0]
-        grad_k_kernel = _get_3d_qk_backward_k_kernel(kd)
+        inv_offsets, inv_attn_base, inv_query_base = _inverse_map_3d_qk(
+            depth=depth,
+            height=height,
+            width=width,
+            out_d=out_d,
+            out_h=out_h,
+            out_w=out_w,
+            kernel_d=kd,
+            kernel_h=kh,
+            kernel_w=kw,
+            stride_d=sd,
+            stride_h=sh,
+            stride_w=sw,
+            dilation_d=int(dilation[0]),
+            dilation_h=int(dilation[1]),
+            dilation_w=int(dilation[2]),
+            causal_d=bool(is_causal[0]),
+            causal_h=bool(is_causal[1]),
+            causal_w=bool(is_causal[2]),
+            dim=head_dim,
+        )
+        grad_k_kernel = _get_3d_qk_backward_k_inverse_kernel(kd)
         grad_k_m = grad_k_kernel(
-            inputs=[grad_attn_m, q_m, stride_param, dilation_param, causal_param, scale_param],
-            grid=(width, height, batch * heads * depth),
-            threadgroup=_threadgroup_2d_heavy(height, width),
+            inputs=[grad_attn_m, q_m, inv_offsets, inv_attn_base, inv_query_base, scale_param],
+            grid=(head_dim, depth * height * width, batch * heads),
+            threadgroup=_threadgroup_grad_v(head_dim, depth * height * width),
             output_shapes=[(batch, heads, depth, height, width, head_dim)],
             output_dtypes=[mx.float32],
         )[0]

@@ -109,6 +109,7 @@ Observed capabilities:
 21. Added 2D/3D split `grad_v` vec4-style backward specializations (4 channels per thread) with dimension-specific launch tuning.
 22. Added 1D vec4 selection heuristic guard for small-shape corner cases (`D=32, L<=128`) where scalar can be more stable.
 23. Expanded required backward perf guardrail coverage with decode-like 1D cases (causal and long non-causal) so 1D backward tuning gains are CI-enforced.
+24. Replaced 2D/3D split `qk_backward` `grad_k` reverse-search kernels with inverse-map kernels to remove the major hotspot and restore strong split-backward scaling.
 
 ### Deliberately Deferred
 
@@ -148,9 +149,9 @@ Generated on `2026-02-21` using:
 
 | Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal speedup vs pure | nanobind speedup vs pure |
 |---|---:|---:|---:|---:|---:|---:|
-| `na1d_k7_s1_d1_noncausal` | `forward` | 0.566 | 0.210 | 0.207 | 2.70x | 2.74x |
-| `na1d_k7_s1_d1_noncausal` | `backward` | 0.634 | 0.313 | 0.297 | 2.03x | 2.13x |
-| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.932 | 0.663 | 0.671 | 2.92x | 2.88x |
-| `na2d_k7x7_s1_d1_noncausal` | `backward` | 2.841 | 0.605 | 0.560 | 4.69x | 5.08x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.960 | 0.312 | 0.298 | 3.08x | 3.23x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 1.059 | 0.371 | 0.354 | 2.85x | 2.99x |
+| `na1d_k7_s1_d1_noncausal` | `forward` | 0.552 | 0.194 | 0.196 | 2.84x | 2.82x |
+| `na1d_k7_s1_d1_noncausal` | `backward` | 0.566 | 0.293 | 0.290 | 1.93x | 1.95x |
+| `na2d_k7x7_s1_d1_noncausal` | `forward` | 2.478 | 0.714 | 0.657 | 3.47x | 3.77x |
+| `na2d_k7x7_s1_d1_noncausal` | `backward` | 2.255 | 0.611 | 0.556 | 3.69x | 4.06x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.868 | 0.338 | 0.303 | 2.57x | 2.86x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 1.048 | 0.368 | 0.360 | 2.85x | 2.91x |

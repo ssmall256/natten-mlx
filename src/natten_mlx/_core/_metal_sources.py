@@ -1308,6 +1308,43 @@ for (int d = 0; d < dim; d++) {{
 """
 
 
+def source_2d_qk_backward_k_inverse(kernel_size: int) -> str:
+    area = _area(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int height = query_shape[2];
+const int width = query_shape[3];
+const int dim = query_shape[4];
+const int out_height = grad_attn_shape[2];
+const int out_width = grad_attn_shape[3];
+const float scale = scale_param[0];
+const int L = {area};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int d = gid.x;
+int key_linear = gid.y;
+if (b >= batch_size || h >= heads || key_linear >= (height * width) || d >= dim) return;
+
+int bh = b * heads + h;
+int attn_bh_base = bh * out_height * out_width * L;
+int query_bh_base = bh * height * width * dim;
+int start = (int)inv_offsets[key_linear];
+int end = (int)inv_offsets[key_linear + 1];
+
+float acc = 0.0f;
+for (int edge = start; edge < end; edge++) {{
+    int g_idx = attn_bh_base + (int)inv_attn_base[edge];
+    int q_idx = query_bh_base + (int)inv_query_base[edge] + d;
+    acc += grad_attn[g_idx] * query[q_idx] * scale;
+}}
+int out_idx = (query_bh_base + key_linear * dim + d);
+out[out_idx] = acc;
+"""
+
+
 def source_2d_qk_backward_q(kernel_size: int) -> str:
     nh = _nh(kernel_size)
     area = _area(kernel_size)
@@ -1863,6 +1900,45 @@ for (int d = 0; d < dim; d++) {{
     int out_idx = (((((b * heads + h) * depth + key_z) * height + key_i) * width + key_j) * dim + d);
     out[out_idx] = acc;
 }}
+"""
+
+
+def source_3d_qk_backward_k_inverse(kernel_size: int) -> str:
+    volume = _volume(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int depth = query_shape[2];
+const int height = query_shape[3];
+const int width = query_shape[4];
+const int dim = query_shape[5];
+const int out_depth = grad_attn_shape[2];
+const int out_height = grad_attn_shape[3];
+const int out_width = grad_attn_shape[4];
+const float scale = scale_param[0];
+const int L = {volume};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int d = gid.x;
+int key_linear = gid.y;
+if (b >= batch_size || h >= heads || key_linear >= (depth * height * width) || d >= dim) return;
+
+int bh = b * heads + h;
+int attn_bh_base = bh * out_depth * out_height * out_width * L;
+int query_bh_base = bh * depth * height * width * dim;
+int start = (int)inv_offsets[key_linear];
+int end = (int)inv_offsets[key_linear + 1];
+
+float acc = 0.0f;
+for (int edge = start; edge < end; edge++) {{
+    int g_idx = attn_bh_base + (int)inv_attn_base[edge];
+    int q_idx = query_bh_base + (int)inv_query_base[edge] + d;
+    acc += grad_attn[g_idx] * query[q_idx] * scale;
+}}
+int out_idx = (query_bh_base + key_linear * dim + d);
+out[out_idx] = acc;
 """
 
 
