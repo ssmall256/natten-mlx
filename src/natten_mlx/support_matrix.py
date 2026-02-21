@@ -29,9 +29,9 @@ def get_support_matrix() -> dict[str, dict]:
             "constraints": [
                 "Fused 1D fast path: odd K, stride>=1, dilation>=1, causal/non-causal supported.",
                 "Fused 2D fast path: square odd K, stride>=1 per axis, dilation>=1 per axis, causal/non-causal per axis.",
-                "Split 1D fast path: K in {3,5,7}, stride=1, non-causal.",
-                "Split 2D fast path: square K in {3,5,7}, stride=(1,1), equal dilations, non-causal on both axes.",
-                "Split 3D fast path: cubic K in {3,5,7}, stride=(1,1,1), equal dilations, non-causal on all axes.",
+                "Split 1D fast path: odd K, stride>=1, non-causal.",
+                "Split 2D fast path: square odd K, stride>=1 per axis, equal dilations, non-causal on both axes.",
+                "Split 3D fast path: cubic odd K, stride>=1 per axis, equal dilations, non-causal on all axes.",
                 "Unsupported configs automatically fall back to pure backend.",
             ],
         },
