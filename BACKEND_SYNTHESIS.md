@@ -110,10 +110,12 @@ Observed capabilities:
 22. Added 1D vec4 selection heuristic guard for small-shape corner cases (`D=32, L<=128`) where scalar can be more stable.
 23. Expanded required backward perf guardrail coverage with decode-like 1D cases (causal and long non-causal) so 1D backward tuning gains are CI-enforced.
 24. Replaced 2D/3D split `qk_backward` `grad_k` reverse-search kernels with inverse-map kernels to remove the major hotspot and restore strong split-backward scaling.
+25. Expanded required backward perf guardrail coverage with explicit split `qk_backward` 2D/3D `grad_k` hotspot cases.
+26. Optimized experimental AV-backward fused kernels to use inverse-map `grad_v` accumulation (removing dense reverse-search in fused mode).
 
 ### Deliberately Deferred
 
-1. Enabling AV-backward fused kernels by default pending kernel-level optimization (current fused variant regresses on benchmark hardware).
+1. Enabling AV-backward fused kernels by default pending consistently positive cross-shape results (after inverse-map optimization, fused remains mixed vs split on benchmark hardware).
 
 ## Current Matrix in This Repo
 
@@ -149,9 +151,9 @@ Generated on `2026-02-21` using:
 
 | Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal speedup vs pure | nanobind speedup vs pure |
 |---|---:|---:|---:|---:|---:|---:|
-| `na1d_k7_s1_d1_noncausal` | `forward` | 0.552 | 0.194 | 0.196 | 2.84x | 2.82x |
-| `na1d_k7_s1_d1_noncausal` | `backward` | 0.566 | 0.293 | 0.290 | 1.93x | 1.95x |
-| `na2d_k7x7_s1_d1_noncausal` | `forward` | 2.478 | 0.714 | 0.657 | 3.47x | 3.77x |
-| `na2d_k7x7_s1_d1_noncausal` | `backward` | 2.255 | 0.611 | 0.556 | 3.69x | 4.06x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.868 | 0.338 | 0.303 | 2.57x | 2.86x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 1.048 | 0.368 | 0.360 | 2.85x | 2.91x |
+| `na1d_k7_s1_d1_noncausal` | `forward` | 0.615 | 0.211 | 0.201 | 2.92x | 3.06x |
+| `na1d_k7_s1_d1_noncausal` | `backward` | 0.483 | 0.302 | 0.303 | 1.60x | 1.59x |
+| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.691 | 0.667 | 0.664 | 2.53x | 2.55x |
+| `na2d_k7x7_s1_d1_noncausal` | `backward` | 1.875 | 0.558 | 0.561 | 3.36x | 3.34x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.862 | 0.305 | 0.302 | 2.82x | 2.85x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.959 | 0.370 | 0.374 | 2.59x | 2.57x |

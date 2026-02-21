@@ -1163,6 +1163,9 @@ int b = gid.z / heads;
 int h = gid.z % heads;
 int x = gid.x;
 if (b >= batch_size || h >= heads) return;
+int bh = b * heads + h;
+int attn_bh_base = bh * out_length * K;
+int grad_bh_base = bh * out_length * dim;
 
 if (x < out_length) {{
     int out_i = x;
@@ -1201,30 +1204,14 @@ if (x < out_length) {{
 
 if (x < length) {{
     int val_i = x;
+    int start = (int)inv_offsets[val_i];
+    int end = (int)inv_offsets[val_i + 1];
     for (int d = 0; d < dim; d++) {{
         float acc = 0.0f;
-        for (int out_i = 0; out_i < out_length; out_i++) {{
-            int i = out_i * stride;
-            if (i >= length) continue;
-
-            int ni = 0;
-            int ei = length;
-            if (!causal) {{
-                NATTEN_GET_WINDOW_START(ni, i, length, K, NH, dilation);
-                NATTEN_GET_WINDOW_END(ei, ni, length, K, dilation);
-            }}
-
-            for (int ki = 0; ki < K; ki++) {{
-                int candidate = (causal ? (i - (K - 1) * dilation) : ni) + ki * dilation;
-                bool valid = causal
-                    ? (candidate >= 0 && candidate <= i && candidate < length)
-                    : (candidate >= 0 && candidate < ei);
-                if (valid && candidate == val_i) {{
-                    int a_idx = (((b * heads + h) * out_length + out_i) * K + ki);
-                    int g_idx = (((b * heads + h) * out_length + out_i) * dim + d);
-                    acc += attention_probs[a_idx] * grad_out[g_idx];
-                }}
-            }}
+        for (int edge = start; edge < end; edge++) {{
+            int a_idx = attn_bh_base + (int)inv_attn_base[edge];
+            int g_idx = grad_bh_base + (int)inv_grad_base[edge] + d;
+            acc += attention_probs[a_idx] * grad_out[g_idx];
         }}
         int out_idx = (((b * heads + h) * length + val_i) * dim + d);
         grad_v[out_idx] = acc;
@@ -1707,6 +1694,9 @@ int h = gid.z % heads;
 int y = gid.y;
 int x = gid.x;
 if (b >= batch_size || h >= heads) return;
+int bh = b * heads + h;
+int attn_bh_base = bh * out_height * out_width * L;
+int grad_bh_base = bh * out_height * out_width * dim;
 
 if (y < out_height && x < out_width) {{
     int out_i = y;
@@ -1759,45 +1749,15 @@ if (y < out_height && x < out_width) {{
 if (y < height && x < width) {{
     int val_i = y;
     int val_j = x;
+    int key_linear = val_i * width + val_j;
+    int start = (int)inv_offsets[key_linear];
+    int end = (int)inv_offsets[key_linear + 1];
     for (int d = 0; d < dim; d++) {{
         float acc = 0.0f;
-        for (int out_i = 0; out_i < out_height; out_i++) {{
-            int i = out_i * stride_h;
-            if (i >= height) continue;
-            for (int out_j = 0; out_j < out_width; out_j++) {{
-                int j = out_j * stride_w;
-                if (j >= width) continue;
-
-                int ni = 0, nj = 0, ei = height, ej = width;
-                if (!causal_h) {{
-                    NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation_h);
-                    NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation_h);
-                }}
-                if (!causal_w) {{
-                    NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation_w);
-                    NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
-                }}
-
-                int neighbor_idx = 0;
-                for (int ki = 0; ki < K; ki++) {{
-                    for (int kj = 0; kj < K; kj++) {{
-                        int cand_i = (causal_h ? (i - (K - 1) * dilation_h) : ni) + ki * dilation_h;
-                        int cand_j = (causal_w ? (j - (K - 1) * dilation_w) : nj) + kj * dilation_w;
-                        bool valid_i = causal_h
-                            ? (cand_i >= 0 && cand_i <= i && cand_i < height)
-                            : (cand_i >= 0 && cand_i < ei);
-                        bool valid_j = causal_w
-                            ? (cand_j >= 0 && cand_j <= j && cand_j < width)
-                            : (cand_j >= 0 && cand_j < ej);
-                        if (valid_i && valid_j && cand_i == val_i && cand_j == val_j) {{
-                            int a_idx = ((((b * heads + h) * out_height + out_i) * out_width + out_j) * L + neighbor_idx);
-                            int g_idx = ((((b * heads + h) * out_height + out_i) * out_width + out_j) * dim + d);
-                            acc += attention_probs[a_idx] * grad_out[g_idx];
-                        }}
-                        neighbor_idx++;
-                    }}
-                }}
-            }}
+        for (int edge = start; edge < end; edge++) {{
+            int a_idx = attn_bh_base + (int)inv_attn_base[edge];
+            int g_idx = grad_bh_base + (int)inv_grad_base[edge] + d;
+            acc += attention_probs[a_idx] * grad_out[g_idx];
         }}
         int out_idx = ((((b * heads + h) * height + val_i) * width + val_j) * dim + d);
         grad_v[out_idx] = acc;
@@ -2378,6 +2338,9 @@ int h = bh % heads;
 int y = gid.y;
 int x = gid.x;
 if (b >= batch_size || h >= heads) return;
+int bh_flat = b * heads + h;
+int attn_bh_base = bh_flat * out_depth * out_height * out_width * L;
+int grad_bh_base = bh_flat * out_depth * out_height * out_width * dim;
 
 if (plane < out_depth && y < out_height && x < out_width) {{
     int out_z = plane;
@@ -2443,60 +2406,15 @@ if (plane < depth && y < height && x < width) {{
     int val_z = plane;
     int val_i = y;
     int val_j = x;
+    int key_linear = (val_z * height + val_i) * width + val_j;
+    int start = (int)inv_offsets[key_linear];
+    int end = (int)inv_offsets[key_linear + 1];
     for (int d = 0; d < dim; d++) {{
         float acc = 0.0f;
-        for (int out_z = 0; out_z < out_depth; out_z++) {{
-            int z = out_z * stride_d;
-            if (z >= depth) continue;
-            for (int out_i = 0; out_i < out_height; out_i++) {{
-                int i = out_i * stride_h;
-                if (i >= height) continue;
-                for (int out_j = 0; out_j < out_width; out_j++) {{
-                    int j = out_j * stride_w;
-                    if (j >= width) continue;
-
-                    int nz = 0, ni = 0, nj = 0, ez = depth, ei = height, ej = width;
-                    if (!causal_d) {{
-                        NATTEN_GET_WINDOW_START(nz, z, depth, K, NH, dilation_d);
-                        NATTEN_GET_WINDOW_END(ez, nz, depth, K, dilation_d);
-                    }}
-                    if (!causal_h) {{
-                        NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation_h);
-                        NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation_h);
-                    }}
-                    if (!causal_w) {{
-                        NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation_w);
-                        NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
-                    }}
-
-                    int neighbor_idx = 0;
-                    for (int kz = 0; kz < K; kz++) {{
-                        for (int ki = 0; ki < K; ki++) {{
-                            for (int kj = 0; kj < K; kj++) {{
-                                int cand_z = (causal_d ? (z - (K - 1) * dilation_d) : nz) + kz * dilation_d;
-                                int cand_i = (causal_h ? (i - (K - 1) * dilation_h) : ni) + ki * dilation_h;
-                                int cand_j = (causal_w ? (j - (K - 1) * dilation_w) : nj) + kj * dilation_w;
-                                bool valid_z = causal_d
-                                    ? (cand_z >= 0 && cand_z <= z && cand_z < depth)
-                                    : (cand_z >= 0 && cand_z < ez);
-                                bool valid_i = causal_h
-                                    ? (cand_i >= 0 && cand_i <= i && cand_i < height)
-                                    : (cand_i >= 0 && cand_i < ei);
-                                bool valid_j = causal_w
-                                    ? (cand_j >= 0 && cand_j <= j && cand_j < width)
-                                    : (cand_j >= 0 && cand_j < ej);
-                                if (valid_z && valid_i && valid_j
-                                    && cand_z == val_z && cand_i == val_i && cand_j == val_j) {{
-                                    int a_idx = (((((b * heads + h) * out_depth + out_z) * out_height + out_i) * out_width + out_j) * L + neighbor_idx);
-                                    int g_idx = (((((b * heads + h) * out_depth + out_z) * out_height + out_i) * out_width + out_j) * dim + d);
-                                    acc += attention_probs[a_idx] * grad_out[g_idx];
-                                }}
-                                neighbor_idx++;
-                            }}
-                        }}
-                    }}
-                }}
-            }}
+        for (int edge = start; edge < end; edge++) {{
+            int a_idx = attn_bh_base + (int)inv_attn_base[edge];
+            int g_idx = grad_bh_base + (int)inv_grad_base[edge] + d;
+            acc += attention_probs[a_idx] * grad_out[g_idx];
         }}
         int out_idx = (((((b * heads + h) * depth + val_z) * height + val_i) * width + val_j) * dim + d);
         grad_v[out_idx] = acc;

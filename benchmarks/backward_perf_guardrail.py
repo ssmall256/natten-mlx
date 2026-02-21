@@ -17,6 +17,7 @@ from pathlib import Path
 import mlx.core as mx
 
 from natten_mlx import na1d, na2d, na3d, set_backend
+from natten_mlx._core import ops
 
 
 def _stats(times_ms: list[float]) -> dict[str, float]:
@@ -113,6 +114,8 @@ def _build_cases():
     q3 = mx.random.normal((1, 10, 12, 14, 4, 16))
     k3 = mx.random.normal((1, 10, 12, 14, 4, 16))
     v3 = mx.random.normal((1, 10, 12, 14, 4, 16))
+    grad_attn_2d_split = mx.random.normal((1, 32, 32, 8, 49))
+    grad_attn_3d_split = mx.random.normal((1, 10, 12, 14, 4, 27))
 
     def _bw_1d():
         def loss_fn(q_in):
@@ -199,12 +202,40 @@ def _build_cases():
 
         return mx.grad(loss_fn)(q3)
 
+    def _bw_split_2d_qk_grad_k_hotspot():
+        _grad_q, grad_k = ops.na2d_qk_backward(
+            q2,
+            k2,
+            grad_attn_2d_split,
+            (7, 7),
+            (1, 1),
+            (1, 1),
+            (False, False),
+            0.5,
+        )
+        return grad_k
+
+    def _bw_split_3d_qk_grad_k_hotspot():
+        _grad_q, grad_k = ops.na3d_qk_backward(
+            q3,
+            k3,
+            grad_attn_3d_split,
+            (3, 3, 3),
+            (1, 1, 1),
+            (1, 1, 1),
+            (False, False, False),
+            0.5,
+        )
+        return grad_k
+
     return [
         {"name": "na1d_k7_s1_d1_noncausal", "backward": _bw_1d},
         {"name": "na1d_k9_s1_d2_causal_L512_D64", "backward": _bw_1d_decode_causal},
         {"name": "na1d_k7_s1_d1_noncausal_L1024_D64", "backward": _bw_1d_decode_long_noncausal},
         {"name": "na2d_k7x7_s1_d1_noncausal", "backward": _bw_2d},
         {"name": "na3d_k3x3x3_s1_d1_noncausal", "backward": _bw_3d},
+        {"name": "split_na2d_qk_grad_k_k7_s1_d1_noncausal", "backward": _bw_split_2d_qk_grad_k_hotspot},
+        {"name": "split_na3d_qk_grad_k_k3_s1_d1_noncausal", "backward": _bw_split_3d_qk_grad_k_hotspot},
     ]
 
 

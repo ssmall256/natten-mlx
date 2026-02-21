@@ -123,12 +123,12 @@ Median latency table (ms, lower is better):
 
 | Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal speedup vs pure | nanobind speedup vs pure |
 |---|---:|---:|---:|---:|---:|---:|
-| `na1d_k7_s1_d1_noncausal` | `forward` | 0.552 | 0.194 | 0.196 | 2.84x | 2.82x |
-| `na1d_k7_s1_d1_noncausal` | `backward` | 0.566 | 0.293 | 0.290 | 1.93x | 1.95x |
-| `na2d_k7x7_s1_d1_noncausal` | `forward` | 2.478 | 0.714 | 0.657 | 3.47x | 3.77x |
-| `na2d_k7x7_s1_d1_noncausal` | `backward` | 2.255 | 0.611 | 0.556 | 3.69x | 4.06x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.868 | 0.338 | 0.303 | 2.57x | 2.86x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 1.048 | 0.368 | 0.360 | 2.85x | 2.91x |
+| `na1d_k7_s1_d1_noncausal` | `forward` | 0.615 | 0.211 | 0.201 | 2.92x | 3.06x |
+| `na1d_k7_s1_d1_noncausal` | `backward` | 0.483 | 0.302 | 0.303 | 1.60x | 1.59x |
+| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.691 | 0.667 | 0.664 | 2.53x | 2.55x |
+| `na2d_k7x7_s1_d1_noncausal` | `backward` | 1.875 | 0.558 | 0.561 | 3.36x | 3.34x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.862 | 0.305 | 0.302 | 2.82x | 2.85x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.959 | 0.370 | 0.374 | 2.59x | 2.57x |
 
 Raw artifacts are written to:
 - `benchmarks/final-perf.json`
@@ -179,7 +179,8 @@ Backward support across backends uses explicit backend backward entrypoints for 
 
 - Nanobind tier delegates to fast-metal where available (same exact eligibility constraints), otherwise pure fallback.
 - 2D/3D split `qk_backward` now uses inverse-map `grad_k` kernels (matching the 1D strategy) to avoid reverse-search hotspot behavior.
-- Experimental AV-backward fusion kernels exist for research (`NATTEN_MLX_AV_BWD_FUSION=1`), but default remains split AV backward kernels because they currently benchmark faster.
+- The required backward guardrail includes dedicated split `qk_backward` 2D/3D `grad_k` hotspot cases.
+- Experimental AV-backward fusion kernels (`NATTEN_MLX_AV_BWD_FUSION=1`) now use inverse-map `grad_v` accumulation, but default remains split AV backward because fused is not consistently faster across representative 1D/2D/3D shapes.
 - MLX lazy evaluation applies; this package does not force evaluation.
 
 ## License

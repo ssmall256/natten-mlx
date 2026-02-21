@@ -134,6 +134,18 @@ def _threadgroup_2d_heavy(height: int, width: int) -> tuple[int, int, int]:
     return (min(max(width, 1), 8), min(max(height, 1), 8), 1)
 
 
+def _threadgroup_av_bwd_fused_1d(max_length: int) -> tuple[int, int, int]:
+    return _threadgroup_1d_heavy(max_length)
+
+
+def _threadgroup_av_bwd_fused_2d(max_height: int, max_width: int) -> tuple[int, int, int]:
+    return _threadgroup_2d_heavy(max_height, max_width)
+
+
+def _threadgroup_av_bwd_fused_3d(max_height: int, max_width: int) -> tuple[int, int, int]:
+    return _threadgroup_2d_heavy(max_height, max_width)
+
+
 def _threadgroup_grad_v(dim: int, values: int) -> tuple[int, int, int]:
     # grad_v kernels map x->channel and y->value index.
     d = max(dim, 1)
@@ -963,6 +975,9 @@ def _get_1d_av_backward_fused_kernel(kernel_size: int):
                 "stride_param",
                 "dilation_param",
                 "causal_param",
+                "inv_offsets",
+                "inv_attn_base",
+                "inv_grad_base",
             ],
             output_names=["grad_attn", "grad_v"],
             source=source_1d_av_backward_fused(kernel_size),
@@ -1116,6 +1131,9 @@ def _get_2d_av_backward_fused_kernel(kernel_size: int):
                 "stride_param",
                 "dilation_param",
                 "causal_param",
+                "inv_offsets",
+                "inv_attn_base",
+                "inv_grad_base",
             ],
             output_names=["grad_attn", "grad_v"],
             source=source_2d_av_backward_fused(kernel_size),
@@ -1269,6 +1287,9 @@ def _get_3d_av_backward_fused_kernel(kernel_size: int):
                 "stride_param",
                 "dilation_param",
                 "causal_param",
+                "inv_offsets",
+                "inv_attn_base",
+                "inv_grad_base",
             ],
             output_names=["grad_attn", "grad_v"],
             source=source_3d_av_backward_fused(kernel_size),
@@ -1983,6 +2004,15 @@ def na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
         stride_param = mx.array([step], dtype=mx.int32)
         dilation_param = mx.array([dil], dtype=mx.int32)
         causal_param = mx.array([1 if causal else 0], dtype=mx.int32)
+        inv_offsets, inv_attn_base, inv_grad_base = _inverse_map_1d(
+            length=length,
+            out_len=out_len,
+            kernel_size=ksize,
+            stride=step,
+            dilation=dil,
+            causal=causal,
+            dim=head_dim,
+        )
         if _USE_AV_BWD_FUSION:
             attn_m = _to_metal_1d(_cast(attn, mx.float32))
             fused_kernel = _get_1d_av_backward_fused_kernel(ksize)
@@ -1996,9 +2026,12 @@ def na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
                     stride_param,
                     dilation_param,
                     causal_param,
+                    inv_offsets,
+                    inv_attn_base,
+                    inv_grad_base,
                 ],
                 grid=(max_len, 1, batch * heads),
-                threadgroup=_threadgroup_1d_heavy(max_len),
+                threadgroup=_threadgroup_av_bwd_fused_1d(max_len),
                 output_shapes=[(batch, heads, out_len, ksize), (batch, heads, length, head_dim)],
                 output_dtypes=[mx.float32, mx.float32],
             )
@@ -2019,15 +2052,6 @@ def na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
                 output_dtypes=[mx.float32],
             )[0]
             attn_m = _to_metal_1d(_cast(attn, mx.float32))
-            inv_offsets, inv_attn_base, inv_grad_base = _inverse_map_1d(
-                length=length,
-                out_len=out_len,
-                kernel_size=ksize,
-                stride=step,
-                dilation=dil,
-                causal=causal,
-                dim=head_dim,
-            )
             use_vec4 = _use_vec4_1d_grad_v(length, head_dim)
             grad_v_kernel = (
                 _get_1d_av_backward_v_vec4_kernel(ksize)
@@ -2167,6 +2191,21 @@ def na2d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
             [1 if bool(is_causal[0]) else 0, 1 if bool(is_causal[1]) else 0],
             dtype=mx.int32,
         )
+        inv_offsets, inv_attn_base, inv_grad_base = _inverse_map_2d(
+            height=height,
+            width=width,
+            out_h=out_h,
+            out_w=out_w,
+            kernel_h=int(kernel_size[0]),
+            kernel_w=int(kernel_size[1]),
+            stride_h=int(stride[0]),
+            stride_w=int(stride[1]),
+            dilation_h=int(dilation[0]),
+            dilation_w=int(dilation[1]),
+            causal_h=bool(is_causal[0]),
+            causal_w=bool(is_causal[1]),
+            dim=head_dim,
+        )
         if _USE_AV_BWD_FUSION:
             attn_m = _to_metal_2d(_cast(attn, mx.float32))
             fused_kernel = _get_2d_av_backward_fused_kernel(int(kernel_size[0]))
@@ -2181,9 +2220,12 @@ def na2d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
                     stride_param,
                     dilation_param,
                     causal_param,
+                    inv_offsets,
+                    inv_attn_base,
+                    inv_grad_base,
                 ],
                 grid=(max_w, max_h, batch * heads),
-                threadgroup=_threadgroup_2d_heavy(max_h, max_w),
+                threadgroup=_threadgroup_av_bwd_fused_2d(max_h, max_w),
                 output_shapes=[
                     (batch, heads, out_h, out_w, area),
                     (batch, heads, height, width, head_dim),
@@ -2207,21 +2249,6 @@ def na2d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
                 output_dtypes=[mx.float32],
             )[0]
             attn_m = _to_metal_2d(_cast(attn, mx.float32))
-            inv_offsets, inv_attn_base, inv_grad_base = _inverse_map_2d(
-                height=height,
-                width=width,
-                out_h=out_h,
-                out_w=out_w,
-                kernel_h=int(kernel_size[0]),
-                kernel_w=int(kernel_size[1]),
-                stride_h=int(stride[0]),
-                stride_w=int(stride[1]),
-                dilation_h=int(dilation[0]),
-                dilation_w=int(dilation[1]),
-                causal_h=bool(is_causal[0]),
-                causal_w=bool(is_causal[1]),
-                dim=head_dim,
-            )
             use_vec4 = (head_dim % 4 == 0) and (head_dim >= 16)
             grad_v_kernel = (
                 _get_2d_av_backward_v_vec4_kernel(int(kernel_size[0]))
@@ -2393,6 +2420,27 @@ def na3d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
             ],
             dtype=mx.int32,
         )
+        inv_offsets, inv_attn_base, inv_grad_base = _inverse_map_3d(
+            depth=depth,
+            height=height,
+            width=width,
+            out_d=out_d,
+            out_h=out_h,
+            out_w=out_w,
+            kernel_d=int(kernel_size[0]),
+            kernel_h=int(kernel_size[1]),
+            kernel_w=int(kernel_size[2]),
+            stride_d=int(stride[0]),
+            stride_h=int(stride[1]),
+            stride_w=int(stride[2]),
+            dilation_d=int(dilation[0]),
+            dilation_h=int(dilation[1]),
+            dilation_w=int(dilation[2]),
+            causal_d=bool(is_causal[0]),
+            causal_h=bool(is_causal[1]),
+            causal_w=bool(is_causal[2]),
+            dim=head_dim,
+        )
         if _USE_AV_BWD_FUSION:
             attn_m = _to_metal_3d(_cast(attn, mx.float32))
             fused_kernel = _get_3d_av_backward_fused_kernel(int(kernel_size[0]))
@@ -2408,9 +2456,12 @@ def na3d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
                     stride_param,
                     dilation_param,
                     causal_param,
+                    inv_offsets,
+                    inv_attn_base,
+                    inv_grad_base,
                 ],
                 grid=(max_w, max_h, batch * heads * max_d),
-                threadgroup=_threadgroup_2d_heavy(max_h, max_w),
+                threadgroup=_threadgroup_av_bwd_fused_3d(max_h, max_w),
                 output_shapes=[
                     (batch, heads, out_d, out_h, out_w, volume),
                     (batch, heads, depth, height, width, head_dim),
@@ -2434,27 +2485,6 @@ def na3d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
                 output_dtypes=[mx.float32],
             )[0]
             attn_m = _to_metal_3d(_cast(attn, mx.float32))
-            inv_offsets, inv_attn_base, inv_grad_base = _inverse_map_3d(
-                depth=depth,
-                height=height,
-                width=width,
-                out_d=out_d,
-                out_h=out_h,
-                out_w=out_w,
-                kernel_d=int(kernel_size[0]),
-                kernel_h=int(kernel_size[1]),
-                kernel_w=int(kernel_size[2]),
-                stride_d=int(stride[0]),
-                stride_h=int(stride[1]),
-                stride_w=int(stride[2]),
-                dilation_d=int(dilation[0]),
-                dilation_h=int(dilation[1]),
-                dilation_w=int(dilation[2]),
-                causal_d=bool(is_causal[0]),
-                causal_h=bool(is_causal[1]),
-                causal_w=bool(is_causal[2]),
-                dim=head_dim,
-            )
             use_vec4 = (head_dim % 4 == 0) and (head_dim >= 16)
             grad_v_kernel = (
                 _get_3d_av_backward_v_vec4_kernel(int(kernel_size[0]))
