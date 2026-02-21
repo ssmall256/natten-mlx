@@ -120,9 +120,9 @@ Observed capabilities:
 6. 2D: yes (square odd K, per-axis stride/dilation >= 1, per-axis causal/non-causal)
 7. 3D: no fused path; split acceleration only
 8. Split acceleration eligibility:
-9. 1D: odd K, stride>=1, non-causal
-10. 2D: square odd K, stride>=1 per axis, equal dilations, non-causal on both axes
-11. 3D: cubic odd K, stride>=1 per axis, equal dilations, non-causal on all axes
+9. 1D: odd K, stride>=1, dilation>=1, causal/non-causal
+10. 2D: square odd K, stride>=1 per axis, equal dilations, per-axis causal/non-causal
+11. 3D: cubic odd K, stride>=1 per axis, equal dilations, per-axis causal/non-causal
 
 1. `nanobind`:
 2. Forward: full (compiled extension when available; otherwise in-tree fallback delegates to fast_metal/pure)

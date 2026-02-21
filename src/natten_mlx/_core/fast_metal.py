@@ -121,7 +121,7 @@ def _get_1d_qk_kernel(kernel_size: int):
     if kernel_size not in _QK_1D_KERNELS:
         _QK_1D_KERNELS[kernel_size] = mx.fast.metal_kernel(
             name=f"natten_mlx_na1d_qk_k{kernel_size}",
-            input_names=["query", "key", "rpb", "dilation_param"],
+            input_names=["query", "key", "rpb", "dilation_param", "causal_param"],
             output_names=["out"],
             source=source_1d_qk(kernel_size),
             ensure_row_contiguous=True,
@@ -133,7 +133,7 @@ def _get_1d_av_kernel(kernel_size: int):
     if kernel_size not in _AV_1D_KERNELS:
         _AV_1D_KERNELS[kernel_size] = mx.fast.metal_kernel(
             name=f"natten_mlx_na1d_av_k{kernel_size}",
-            input_names=["attention_probs", "value", "dilation_param"],
+            input_names=["attention_probs", "value", "dilation_param", "causal_param"],
             output_names=["out"],
             source=source_1d_av(kernel_size),
             ensure_row_contiguous=True,
@@ -145,7 +145,7 @@ def _get_2d_qk_kernel(kernel_size: int):
     if kernel_size not in _QK_2D_KERNELS:
         _QK_2D_KERNELS[kernel_size] = mx.fast.metal_kernel(
             name=f"natten_mlx_na2d_qk_k{kernel_size}",
-            input_names=["query", "key", "rpb", "dilation_param"],
+            input_names=["query", "key", "rpb", "dilation_param", "causal_param"],
             output_names=["out"],
             source=source_2d_qk(kernel_size),
             ensure_row_contiguous=True,
@@ -157,7 +157,7 @@ def _get_2d_av_kernel(kernel_size: int):
     if kernel_size not in _AV_2D_KERNELS:
         _AV_2D_KERNELS[kernel_size] = mx.fast.metal_kernel(
             name=f"natten_mlx_na2d_av_k{kernel_size}",
-            input_names=["attention_probs", "value", "dilation_param"],
+            input_names=["attention_probs", "value", "dilation_param", "causal_param"],
             output_names=["out"],
             source=source_2d_av(kernel_size),
             ensure_row_contiguous=True,
@@ -169,7 +169,7 @@ def _get_3d_qk_kernel(kernel_size: int):
     if kernel_size not in _QK_3D_KERNELS:
         _QK_3D_KERNELS[kernel_size] = mx.fast.metal_kernel(
             name=f"natten_mlx_na3d_qk_k{kernel_size}",
-            input_names=["query", "key", "rpb", "dilation_param"],
+            input_names=["query", "key", "rpb", "dilation_param", "causal_param"],
             output_names=["out"],
             source=source_3d_qk(kernel_size),
             ensure_row_contiguous=True,
@@ -181,7 +181,7 @@ def _get_3d_av_kernel(kernel_size: int):
     if kernel_size not in _AV_3D_KERNELS:
         _AV_3D_KERNELS[kernel_size] = mx.fast.metal_kernel(
             name=f"natten_mlx_na3d_av_k{kernel_size}",
-            input_names=["attention_probs", "value", "dilation_param"],
+            input_names=["attention_probs", "value", "dilation_param", "causal_param"],
             output_names=["out"],
             source=source_3d_av(kernel_size),
             ensure_row_contiguous=True,
@@ -233,11 +233,11 @@ def _is_valid_kernel_size(kernel_size: int) -> bool:
     return kernel_size > 0 and (kernel_size % 2 == 1)
 
 
-def _supports_1d_split(kernel_size, stride, is_causal) -> bool:
+def _supports_1d_split(kernel_size, stride, dilation, is_causal) -> bool:
     return (
         _is_valid_kernel_size(int(kernel_size[0]))
         and int(stride[0]) >= 1
-        and not bool(is_causal[0])
+        and int(dilation[0]) >= 1
     )
 
 
@@ -249,8 +249,6 @@ def _supports_2d_split(kernel_size, stride, dilation, is_causal) -> bool:
         and int(stride[1]) >= 1
         and int(dilation[0]) >= 1
         and int(dilation[0]) == int(dilation[1])
-        and not bool(is_causal[0])
-        and not bool(is_causal[1])
     )
 
 
@@ -263,9 +261,6 @@ def _supports_3d_split(kernel_size, stride, dilation, is_causal) -> bool:
         and int(stride[2]) >= 1
         and int(dilation[0]) >= 1
         and int(dilation[0]) == int(dilation[1]) == int(dilation[2])
-        and not bool(is_causal[0])
-        and not bool(is_causal[1])
-        and not bool(is_causal[2])
     )
 
 
@@ -394,13 +389,14 @@ def na3d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
 
 
 def na1d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
-    if not is_available() or not _supports_1d_split(kernel_size, stride, is_causal):
+    if not is_available() or not _supports_1d_split(kernel_size, stride, dilation, is_causal):
         return pure.na1d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale)
 
     batch, length, heads, _ = q.shape
     ksize = int(kernel_size[0])
     step = int(stride[0])
     dil = int(dilation[0])
+    causal = 1 if bool(is_causal[0]) else 0
     qpos, _ = _query_positions(length, step)
     scale_value = (q.shape[-1] ** -0.5) if scale is None else float(scale)
 
@@ -410,8 +406,9 @@ def na1d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
         k_m = _to_metal_1d(_cast(k, mx.float32))
         rpb = _zero_rpb_1d(heads, ksize, mx.float32)
         dilation_param = mx.array([dil], dtype=mx.int32)
+        causal_param = mx.array([causal], dtype=mx.int32)
         out = kernel(
-            inputs=[q_m, k_m, rpb, dilation_param],
+            inputs=[q_m, k_m, rpb, dilation_param, causal_param],
             grid=(length, 1, batch * heads),
             threadgroup=_threadgroup_1d(length),
             output_shapes=[(batch, heads, length, ksize)],
@@ -429,13 +426,14 @@ def na1d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
 
 
 def na1d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
-    if not is_available() or not _supports_1d_split(kernel_size, stride, is_causal):
+    if not is_available() or not _supports_1d_split(kernel_size, stride, dilation, is_causal):
         return pure.na1d_av_forward(attn, v, kernel_size, stride, dilation, is_causal)
 
     batch, out_length, heads, ksize = attn.shape
     length = int(v.shape[1])
     step = int(stride[0])
     dil = int(dilation[0])
+    causal = 1 if bool(is_causal[0]) else 0
     qpos, expected_out = _query_positions(length, step)
 
     if ksize != int(kernel_size[0]):
@@ -457,8 +455,9 @@ def na1d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
         attn_m = _to_metal_1d(_cast(attn_full, mx.float32))
         v_m = _to_metal_1d(_cast(v, mx.float32))
         dilation_param = mx.array([dil], dtype=mx.int32)
+        causal_param = mx.array([causal], dtype=mx.int32)
         out = kernel(
-            inputs=[attn_m, v_m, dilation_param],
+            inputs=[attn_m, v_m, dilation_param, causal_param],
             grid=(length, 1, batch * heads),
             threadgroup=_threadgroup_1d(length),
             output_shapes=[(batch, heads, length, v.shape[-1])],
@@ -484,6 +483,8 @@ def na2d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
     step_h = int(stride[0])
     step_w = int(stride[1])
     dil = int(dilation[0])
+    causal_h = 1 if bool(is_causal[0]) else 0
+    causal_w = 1 if bool(is_causal[1]) else 0
     qh, _ = _query_positions(height, step_h)
     qw, _ = _query_positions(width, step_w)
     area = ksize * ksize
@@ -495,8 +496,9 @@ def na2d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
         k_m = _to_metal_2d(_cast(k, mx.float32))
         rpb = _zero_rpb_2d(heads, ksize, mx.float32)
         dilation_param = mx.array([dil], dtype=mx.int32)
+        causal_param = mx.array([causal_h, causal_w], dtype=mx.int32)
         out = kernel(
-            inputs=[q_m, k_m, rpb, dilation_param],
+            inputs=[q_m, k_m, rpb, dilation_param, causal_param],
             grid=(width, height, batch * heads),
             threadgroup=_threadgroup_2d(height, width),
             output_shapes=[(batch, heads, height, width, area)],
@@ -526,6 +528,8 @@ def na2d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
     step_h = int(stride[0])
     step_w = int(stride[1])
     dil = int(dilation[0])
+    causal_h = 1 if bool(is_causal[0]) else 0
+    causal_w = 1 if bool(is_causal[1]) else 0
     qh, expected_h = _query_positions(height, step_h)
     qw, expected_w = _query_positions(width, step_w)
 
@@ -555,8 +559,9 @@ def na2d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
         attn_m = _to_metal_2d(_cast(attn_full, mx.float32))
         v_m = _to_metal_2d(_cast(v, mx.float32))
         dilation_param = mx.array([dil], dtype=mx.int32)
+        causal_param = mx.array([causal_h, causal_w], dtype=mx.int32)
         out = kernel(
-            inputs=[attn_m, v_m, dilation_param],
+            inputs=[attn_m, v_m, dilation_param, causal_param],
             grid=(width, height, batch * heads),
             threadgroup=_threadgroup_2d(height, width),
             output_shapes=[(batch, heads, height, width, v.shape[-1])],
@@ -585,6 +590,9 @@ def na3d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
     step_h = int(stride[1])
     step_w = int(stride[2])
     dil = int(dilation[0])
+    causal_d = 1 if bool(is_causal[0]) else 0
+    causal_h = 1 if bool(is_causal[1]) else 0
+    causal_w = 1 if bool(is_causal[2]) else 0
     qd, _ = _query_positions(depth, step_d)
     qh, _ = _query_positions(height, step_h)
     qw, _ = _query_positions(width, step_w)
@@ -597,8 +605,9 @@ def na3d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
         k_m = _to_metal_3d(_cast(k, mx.float32))
         rpb = _zero_rpb_3d(heads, ksize, mx.float32)
         dilation_param = mx.array([dil], dtype=mx.int32)
+        causal_param = mx.array([causal_d, causal_h, causal_w], dtype=mx.int32)
         out = kernel(
-            inputs=[q_m, k_m, rpb, dilation_param],
+            inputs=[q_m, k_m, rpb, dilation_param, causal_param],
             grid=(width, height, batch * heads * depth),
             threadgroup=_threadgroup_2d(height, width),
             output_shapes=[(batch, heads, depth, height, width, volume)],
@@ -632,6 +641,9 @@ def na3d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
     step_h = int(stride[1])
     step_w = int(stride[2])
     dil = int(dilation[0])
+    causal_d = 1 if bool(is_causal[0]) else 0
+    causal_h = 1 if bool(is_causal[1]) else 0
+    causal_w = 1 if bool(is_causal[2]) else 0
     qd, expected_d = _query_positions(depth, step_d)
     qh, expected_h = _query_positions(height, step_h)
     qw, expected_w = _query_positions(width, step_w)
@@ -669,8 +681,9 @@ def na3d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
         attn_m = _to_metal_3d(_cast(attn_full, mx.float32))
         v_m = _to_metal_3d(_cast(v, mx.float32))
         dilation_param = mx.array([dil], dtype=mx.int32)
+        causal_param = mx.array([causal_d, causal_h, causal_w], dtype=mx.int32)
         out = kernel(
-            inputs=[attn_m, v_m, dilation_param],
+            inputs=[attn_m, v_m, dilation_param, causal_param],
             grid=(width, height, batch * heads * depth),
             threadgroup=_threadgroup_2d(height, width),
             output_shapes=[(batch, heads, depth, height, width, v.shape[-1])],
@@ -743,7 +756,7 @@ def na3d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, s
 
 
 def na1d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale):
-    if not is_available() or not _supports_1d_split(kernel_size, stride, is_causal):
+    if not is_available() or not _supports_1d_split(kernel_size, stride, dilation, is_causal):
         return pure.na1d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale)
 
     def _run():
@@ -760,7 +773,7 @@ def na1d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
 
 
 def na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal):
-    if not is_available() or not _supports_1d_split(kernel_size, stride, is_causal):
+    if not is_available() or not _supports_1d_split(kernel_size, stride, dilation, is_causal):
         return pure.na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal)
 
     def _run():

@@ -160,9 +160,9 @@ Backward support across backends uses explicit backend backward entrypoints for 
 
 - Fast Metal fused 3D is not implemented; 3D uses split acceleration where eligible.
 - Fast Metal split acceleration eligibility is strict:
-  - 1D split: odd `K`, `stride>=1`, non-causal.
-  - 2D split: square odd `K`, per-axis `stride>=1`, equal dilations, non-causal on both axes.
-  - 3D split: cubic odd `K`, per-axis `stride>=1`, equal dilations, non-causal on all axes.
+  - 1D split: odd `K`, `stride>=1`, `dilation>=1`, causal/non-causal supported.
+  - 2D split: square odd `K`, per-axis `stride>=1`, equal dilations, per-axis causal/non-causal supported.
+  - 3D split: cubic odd `K`, per-axis `stride>=1`, equal dilations, per-axis causal/non-causal supported.
 - Fast Metal fused acceleration eligibility:
   - 1D fused: odd `K`, `stride>=1`, `dilation>=1`, causal/non-causal supported.
   - 2D fused: square odd `K`, per-axis `stride>=1`, per-axis `dilation>=1`, per-axis causal/non-causal supported.
