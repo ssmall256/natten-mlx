@@ -181,6 +181,13 @@ def _with_fallback(fn, fallback):
         return fallback()
 
 
+def _with_grad_fallback(fn, fallback):
+    try:
+        return fn()
+    except Exception:
+        return fallback()
+
+
 def na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
     if not is_available() or not _supports_1d(kernel_size, stride, is_causal):
         return pure.na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
@@ -362,4 +369,138 @@ def na2d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
     return _with_fallback(
         _run,
         lambda: pure.na2d_av_forward(attn, v, kernel_size, stride, dilation, is_causal),
+    )
+
+
+def na1d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale):
+    if not is_available() or not _supports_1d(kernel_size, stride, is_causal):
+        return pure.na1d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale)
+
+    def _run():
+        def _loss_q(q_in):
+            out = na1d_forward(q_in, k, v, kernel_size, stride, dilation, is_causal, scale)
+            return mx.sum(out * grad_out)
+
+        def _loss_k(k_in):
+            out = na1d_forward(q, k_in, v, kernel_size, stride, dilation, is_causal, scale)
+            return mx.sum(out * grad_out)
+
+        def _loss_v(v_in):
+            out = na1d_forward(q, k, v_in, kernel_size, stride, dilation, is_causal, scale)
+            return mx.sum(out * grad_out)
+
+        return mx.grad(_loss_q)(q), mx.grad(_loss_k)(k), mx.grad(_loss_v)(v)
+
+    return _with_grad_fallback(
+        _run,
+        lambda: pure.na1d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale),
+    )
+
+
+def na2d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale):
+    if not is_available() or not _supports_2d(kernel_size, stride, dilation, is_causal):
+        return pure.na2d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale)
+
+    def _run():
+        def _loss_q(q_in):
+            out = na2d_forward(q_in, k, v, kernel_size, stride, dilation, is_causal, scale)
+            return mx.sum(out * grad_out)
+
+        def _loss_k(k_in):
+            out = na2d_forward(q, k_in, v, kernel_size, stride, dilation, is_causal, scale)
+            return mx.sum(out * grad_out)
+
+        def _loss_v(v_in):
+            out = na2d_forward(q, k, v_in, kernel_size, stride, dilation, is_causal, scale)
+            return mx.sum(out * grad_out)
+
+        return mx.grad(_loss_q)(q), mx.grad(_loss_k)(k), mx.grad(_loss_v)(v)
+
+    return _with_grad_fallback(
+        _run,
+        lambda: pure.na2d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale),
+    )
+
+
+def na1d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale):
+    if not is_available() or not _supports_1d(kernel_size, stride, is_causal):
+        return pure.na1d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale)
+
+    def _run():
+        def _loss_q(q_in):
+            out = na1d_qk_forward(q_in, k, kernel_size, stride, dilation, is_causal, scale)
+            return mx.sum(out * grad_attn)
+
+        def _loss_k(k_in):
+            out = na1d_qk_forward(q, k_in, kernel_size, stride, dilation, is_causal, scale)
+            return mx.sum(out * grad_attn)
+
+        return mx.grad(_loss_q)(q), mx.grad(_loss_k)(k)
+
+    return _with_grad_fallback(
+        _run,
+        lambda: pure.na1d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale),
+    )
+
+
+def na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal):
+    if not is_available() or not _supports_1d(kernel_size, stride, is_causal):
+        return pure.na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal)
+
+    def _run():
+        def _loss_attn(attn_in):
+            out = na1d_av_forward(attn_in, v, kernel_size, stride, dilation, is_causal)
+            return mx.sum(out * grad_out)
+
+        def _loss_v(v_in):
+            out = na1d_av_forward(attn, v_in, kernel_size, stride, dilation, is_causal)
+            return mx.sum(out * grad_out)
+
+        return mx.grad(_loss_attn)(attn), mx.grad(_loss_v)(v)
+
+    return _with_grad_fallback(
+        _run,
+        lambda: pure.na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal),
+    )
+
+
+def na2d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale):
+    if not is_available() or not _supports_2d(kernel_size, stride, dilation, is_causal):
+        return pure.na2d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale)
+
+    def _run():
+        def _loss_q(q_in):
+            out = na2d_qk_forward(q_in, k, kernel_size, stride, dilation, is_causal, scale)
+            return mx.sum(out * grad_attn)
+
+        def _loss_k(k_in):
+            out = na2d_qk_forward(q, k_in, kernel_size, stride, dilation, is_causal, scale)
+            return mx.sum(out * grad_attn)
+
+        return mx.grad(_loss_q)(q), mx.grad(_loss_k)(k)
+
+    return _with_grad_fallback(
+        _run,
+        lambda: pure.na2d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale),
+    )
+
+
+def na2d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal):
+    if not is_available() or not _supports_2d(kernel_size, stride, dilation, is_causal):
+        return pure.na2d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal)
+
+    def _run():
+        def _loss_attn(attn_in):
+            out = na2d_av_forward(attn_in, v, kernel_size, stride, dilation, is_causal)
+            return mx.sum(out * grad_out)
+
+        def _loss_v(v_in):
+            out = na2d_av_forward(attn, v_in, kernel_size, stride, dilation, is_causal)
+            return mx.sum(out * grad_out)
+
+        return mx.grad(_loss_attn)(attn), mx.grad(_loss_v)(v)
+
+    return _with_grad_fallback(
+        _run,
+        lambda: pure.na2d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal),
     )

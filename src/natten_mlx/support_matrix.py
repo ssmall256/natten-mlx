@@ -10,21 +10,21 @@ def get_support_matrix() -> dict[str, dict]:
 
     Notes:
     - "backward" is defined for end-to-end `na1d` / `na2d` module use.
-    - For non-pure backends, gradients are computed with pure semantics in custom VJP.
+    - Non-pure backends expose explicit backward entrypoints with pure fallback safety.
     """
 
     return {
         "pure": {
             "available": pure.is_available(),
             "forward": {"na1d": True, "na2d": True, "split_qk_av": True},
-            "backward": {"na1d": True, "na2d": True},
+            "backward": {"na1d": True, "na2d": True, "split_qk_av": True},
             "fusion": {"na1d": False, "na2d": False},
             "constraints": [],
         },
         "fast_metal": {
             "available": fast_metal.is_available(),
             "forward": {"na1d": True, "na2d": True, "split_qk_av": True},
-            "backward": {"na1d": True, "na2d": True},
+            "backward": {"na1d": True, "na2d": True, "split_qk_av": True},
             "fusion": {"na1d": True, "na2d": True},
             "constraints": [
                 "Fused fast path currently targets non-causal, stride=1, K in {3,5,7}.",
@@ -35,7 +35,7 @@ def get_support_matrix() -> dict[str, dict]:
         "nanobind": {
             "available": nanobind.is_available(),
             "forward": {"na1d": True, "na2d": True, "split_qk_av": True},
-            "backward": {"na1d": True, "na2d": True},
+            "backward": {"na1d": True, "na2d": True, "split_qk_av": True},
             "fusion": {"na1d": True, "na2d": True},
             "constraints": [
                 "Ships with an in-tree implementation that delegates to fast_metal where available, otherwise pure.",

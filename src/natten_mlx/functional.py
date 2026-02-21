@@ -6,7 +6,14 @@ from typing import Optional, Tuple, Union
 
 import mlx.core as mx
 
-from natten_mlx._core import ops
+from natten_mlx.autograd import (
+    na1d_av_with_grad,
+    na1d_qk_with_grad,
+    na1d_with_grad,
+    na2d_av_with_grad,
+    na2d_qk_with_grad,
+    na2d_with_grad,
+)
 from natten_mlx.utils.params import (
     check_dilation_kernel_vs_input,
     check_kernel_size_vs_input,
@@ -63,7 +70,7 @@ def na1d(
     check_stride_vs_kernel(st, ks)
     check_dilation_kernel_vs_input(dil, ks, (seqlen,))
 
-    return ops.na1d_forward(query, key, value, ks, st, dil, caus, scale)
+    return na1d_with_grad(query, key, value, ks, st, dil, caus, scale)
 
 
 def na2d(
@@ -91,7 +98,7 @@ def na2d(
     check_stride_vs_kernel(st, ks)
     check_dilation_kernel_vs_input(dil, ks, (height, width))
 
-    return ops.na2d_forward(query, key, value, ks, st, dil, caus, scale)
+    return na2d_with_grad(query, key, value, ks, st, dil, caus, scale)
 
 
 def na1d_qk(
@@ -115,7 +122,7 @@ def na1d_qk(
     check_stride_vs_kernel(st, ks)
     check_dilation_kernel_vs_input(dil, ks, (seqlen,))
 
-    return ops.na1d_qk_forward(query, key, ks, st, dil, caus, scale)
+    return na1d_qk_with_grad(query, key, ks, st, dil, caus, scale)
 
 
 def na1d_av(
@@ -145,7 +152,7 @@ def na1d_av(
     check_stride_vs_kernel(st, ks)
     check_dilation_kernel_vs_input(dil, ks, (value.shape[1],))
 
-    return ops.na1d_av_forward(attn, value, ks, st, dil, caus)
+    return na1d_av_with_grad(attn, value, ks, st, dil, caus)
 
 
 def na2d_qk(
@@ -169,7 +176,7 @@ def na2d_qk(
     check_stride_vs_kernel(st, ks)
     check_dilation_kernel_vs_input(dil, ks, (height, width))
 
-    return ops.na2d_qk_forward(query, key, ks, st, dil, caus, scale)
+    return na2d_qk_with_grad(query, key, ks, st, dil, caus, scale)
 
 
 def na2d_av(
@@ -199,7 +206,7 @@ def na2d_av(
     check_stride_vs_kernel(st, ks)
     check_dilation_kernel_vs_input(dil, ks, (value.shape[1], value.shape[2]))
 
-    return ops.na2d_av_forward(attn, value, ks, st, dil, caus)
+    return na2d_av_with_grad(attn, value, ks, st, dil, caus)
 
 
 __all__ = ["na1d", "na2d", "na1d_qk", "na1d_av", "na2d_qk", "na2d_av"]

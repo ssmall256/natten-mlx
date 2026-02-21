@@ -121,3 +121,29 @@ def test_backend_forced_backward_smoke(backend: str):
     grad_q = _run_backend(backend, _run)
     assert grad_q.shape == q.shape
     assert np.isfinite(np.array(grad_q)).all()
+
+
+@pytest.mark.parametrize("backend", ["pure", "fast_metal", "nanobind"])
+def test_backend_forced_dropout_backward_smoke(backend: str):
+    x = mx.random.normal((1, 10, 12))
+
+    def _run():
+        layer = NeighborhoodAttention1D(
+            embed_dim=12,
+            num_heads=3,
+            kernel_size=3,
+            stride=1,
+            is_causal=False,
+            attn_drop=0.2,
+        )
+
+        def loss_fn(x_in):
+            return mx.sum(layer(x_in))
+
+        grad_x = mx.grad(loss_fn)(x)
+        mx.eval(grad_x)
+        return grad_x
+
+    grad_x = _run_backend(backend, _run)
+    assert grad_x.shape == x.shape
+    assert np.isfinite(np.array(grad_x)).all()

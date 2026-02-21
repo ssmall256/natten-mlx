@@ -92,8 +92,10 @@ Observed capabilities:
 6. Added explicit backend capability API:
 7. `/Users/sam/Code/natten-mlx/src/natten_mlx/support_matrix.py`
 8. Hardened backward behavior:
-9. Custom VJP now uses pure semantics for gradient evaluation when accelerated backends are active.
-10. Added tests for support matrix API.
+9. Added explicit backend backward entrypoints for fused and split 1D/2D paths.
+10. Custom VJP now routes to backend backward when available, with pure fallback safety.
+11. Added backend gradient parity coverage (backend vs pure and upstream v0.14 split reference).
+12. Added tests for support matrix API.
 
 ### Deliberately Deferred
 
@@ -109,10 +111,10 @@ Observed capabilities:
 
 1. `fast_metal`:
 2. Forward: yes (fused + split on supported configs, fallback otherwise)
-3. Backward: yes for end-to-end `na1d`/`na2d` via pure-semantic custom VJP
+3. Backward: yes (fused + split backward entrypoints, pure fallback for unsupported/error paths)
 4. Fusion: yes (supported config subset)
 
 1. `nanobind`:
 2. Forward: full (in-tree implementation delegates to fast_metal/pure)
-3. Backward: yes for end-to-end `na1d`/`na2d` via pure-semantic custom VJP
+3. Backward: yes (mirrors fast_metal/pure backend backward entrypoints)
 4. Fusion: yes when delegated fast_metal fast path is eligible; otherwise fallback

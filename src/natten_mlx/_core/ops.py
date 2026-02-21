@@ -70,6 +70,44 @@ def na2d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
     return _backend_module().na2d_av_forward(attn, v, kernel_size, stride, dilation, is_causal)
 
 
+def _backend_fn_or_pure(name: str):
+    backend_module = _backend_module()
+    fn = getattr(backend_module, name, None)
+    if fn is not None:
+        return fn
+    return getattr(pure, name)
+
+
+def na1d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale):
+    fn = _backend_fn_or_pure("na1d_backward")
+    return fn(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale)
+
+
+def na2d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale):
+    fn = _backend_fn_or_pure("na2d_backward")
+    return fn(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale)
+
+
+def na1d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale):
+    fn = _backend_fn_or_pure("na1d_qk_backward")
+    return fn(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale)
+
+
+def na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal):
+    fn = _backend_fn_or_pure("na1d_av_backward")
+    return fn(attn, v, grad_out, kernel_size, stride, dilation, is_causal)
+
+
+def na2d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale):
+    fn = _backend_fn_or_pure("na2d_qk_backward")
+    return fn(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale)
+
+
+def na2d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal):
+    fn = _backend_fn_or_pure("na2d_av_backward")
+    return fn(attn, v, grad_out, kernel_size, stride, dilation, is_causal)
+
+
 register_backend("pure", pure)
 register_backend("fast_metal", fast_metal)
 register_backend("nanobind", nanobind)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import mlx.core as mx
 
-from natten_mlx._core import ops, pure
+from natten_mlx._core import ops
 
 
 if hasattr(mx, "custom_function"):
@@ -34,23 +34,17 @@ if hasattr(mx, "custom_function"):
     @_na1d_custom.vjp
     def _na1d_vjp(primals, cotangent, output):
         q, k, v, kernel_size_tuple, stride_tuple, dilation_tuple, is_causal_tuple, scale_float = primals
-
-        def forward_fn(q_in, k_in, v_in):
-            backend_name = ops.get_backend()
-            fn = pure.na1d_forward if backend_name != "pure" else ops.na1d_forward
-            return fn(
-                q_in,
-                k_in,
-                v_in,
-                kernel_size_tuple,
-                stride_tuple,
-                dilation_tuple,
-                is_causal_tuple,
-                scale_float,
-            )
-
-        _, vjp_fn = mx.vjp(forward_fn, q, k, v)
-        grad_q, grad_k, grad_v = vjp_fn(cotangent)
+        grad_q, grad_k, grad_v = ops.na1d_backward(
+            q,
+            k,
+            v,
+            cotangent,
+            kernel_size_tuple,
+            stride_tuple,
+            dilation_tuple,
+            is_causal_tuple,
+            scale_float,
+        )
         return (grad_q, grad_k, grad_v, None, None, None, None, None)
 
 else:

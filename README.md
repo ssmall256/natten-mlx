@@ -58,6 +58,7 @@ Compat shims preserve API names and signatures where possible, but tensor types 
 ## Upstream Parity
 
 - `tests/test_upstream_parity.py` compares v0.14 functional outputs against official `natten==0.14.6`.
+- Upstream parity suite also includes split-path gradient parity checks (1D/2D) against official v0.14.
 - CI workflow: `.github/workflows/upstream-parity.yml`.
 - Local run:
 
@@ -100,7 +101,7 @@ Current design targets three tiers:
 
 Audit provenance for this synthesis: `BACKEND_SYNTHESIS.md`.
 
-Backward support for end-to-end `na1d` / `na2d` is preserved across backends by using pure-semantic custom VJP when accelerated backends are active.
+Backward support across backends uses explicit backend backward entrypoints for fused and split paths, with pure fallback as safety.
 
 ## Limitations
 
