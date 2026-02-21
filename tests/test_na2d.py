@@ -29,3 +29,29 @@ def test_neighborhood_attention_2d_module_with_attn_drop():
     x = mx.random.normal((2, 7, 5, 12))
     y = layer(x)
     assert y.shape == (2, 7, 5, 12)
+
+
+def test_neighborhood_attention_2d_attn_drop_causal_not_supported():
+    layer = NeighborhoodAttention2D(
+        embed_dim=12,
+        num_heads=3,
+        kernel_size=(3, 3),
+        is_causal=(True, False),
+        attn_drop=0.1,
+    )
+    x = mx.random.normal((2, 7, 5, 12))
+    with pytest.raises(NotImplementedError):
+        layer(x)
+
+
+def test_neighborhood_attention_2d_attn_drop_stride_not_supported():
+    layer = NeighborhoodAttention2D(
+        embed_dim=12,
+        num_heads=3,
+        kernel_size=(3, 3),
+        stride=(2, 1),
+        attn_drop=0.1,
+    )
+    x = mx.random.normal((2, 7, 5, 12))
+    with pytest.raises(NotImplementedError):
+        layer(x)

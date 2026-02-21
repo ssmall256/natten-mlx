@@ -71,6 +71,11 @@ class NeighborhoodAttention1D(nn.Module):
         v = v.squeeze(2)
 
         if self.attn_drop_rate > 0.0:
+            if self.stride[0] != 1 or bool(self.is_causal[0]):
+                raise NotImplementedError(
+                    "attn_drop with stride != 1 or is_causal=True is not supported yet. "
+                    "Use attn_drop=0.0 for these configurations."
+                )
             logits = na1d_qk(q, k, kernel_size=self.kernel_size, dilation=self.dilation)
             default_scale = self.head_dim ** -0.5
             if self.scale != default_scale:

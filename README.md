@@ -46,6 +46,28 @@ layer = natten.NeighborhoodAttention1D(dim=128, kernel_size=7, num_heads=4)
 
 Compat shims preserve API names and signatures where possible, but tensor types are `mlx.core.array`, not `torch.Tensor`.
 
+## Semantics Notes
+
+- Parameter validation follows strict NATTEN-style coverage constraints: `dilation * kernel_size <= input_size` per spatial dimension.
+- `attn_drop` is supported in:
+  - Modern modules: `NeighborhoodAttention1D`, `NeighborhoodAttention2D`
+  - v0.14 compat modules: `natten_mlx.compat.v014.NeighborhoodAttention1D`, `NeighborhoodAttention2D`
+- When `attn_drop > 0`, modules take the split `qk -> softmax -> dropout -> av` path; otherwise they use fused `na1d` / `na2d`.
+- In modern modules, `attn_drop > 0` currently requires non-causal, stride-1 neighborhoods. Causal/strided configurations fail fast with `NotImplementedError` to avoid silent semantic drift.
+
+## Upstream Parity
+
+- `tests/test_upstream_parity.py` compares v0.14 functional outputs against official `natten==0.14.6`.
+- CI workflow: `.github/workflows/upstream-parity.yml`.
+- Local run:
+
+```bash
+uv sync --extra dev
+uv pip install numpy "torch==2.3.1"
+uv pip install --no-build-isolation "natten==0.14.6"
+NATTEN_UPSTREAM_PARITY=1 uv run python -m pytest tests/test_upstream_parity.py -q
+```
+
 ## natten-mlx vs natten-mps
 
 - Use `natten-mlx` for MLX-native projects.

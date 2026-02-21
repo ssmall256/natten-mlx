@@ -216,6 +216,7 @@ def natten1dqkrpb(query, key, rpb, kernel_size, dilation):
     k = mx.transpose(key, axes=(0, 2, 1, 3))
 
     logits = na1d_qk(q, k, ks, dil)
+    logits = logits / (query.shape[-1] ** -0.5)
 
     rpb_index = _rpb_indices_1d(length, ksize, dil[0])
     flat_idx = mx.array(rpb_index.reshape(-1), dtype=mx.int32)
@@ -278,6 +279,7 @@ def natten2dqkrpb(query, key, rpb, kernel_size, dilation):
     k = mx.transpose(key, axes=(0, 2, 3, 1, 4))
 
     logits = na2d_qk(q, k, ks, dil)
+    logits = logits / (query.shape[-1] ** -0.5)
 
     pair_idx = _rpb_indices_2d(height, width, ks, dil)
     rpb_flat = mx.reshape(rpb, (rpb.shape[0], (2 * kh - 1) * (2 * kw - 1)))
