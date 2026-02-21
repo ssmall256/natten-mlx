@@ -103,7 +103,6 @@ Observed capabilities:
 ### Deliberately Deferred
 
 1. Further performance-tuning of backward kernels (tiling/fusion beyond current per-op kernels).
-2. Directly embedding Torch MPS extension code into MLX package.
 
 ## Current Matrix in This Repo
 

@@ -1,6 +1,22 @@
 import importlib
+import importlib.util
+import os
+from pathlib import Path
 
 import pytest
+
+
+def _load_compiled_nanobind_extension_direct():
+    ext_dir = Path(__file__).resolve().parents[1] / "src" / "natten_mlx" / "_core"
+    candidates = sorted(ext_dir.glob("_nanobind_ext*.so"))
+    if not candidates:
+        raise ImportError("compiled nanobind extension artifact not found")
+    spec = importlib.util.spec_from_file_location("_nanobind_ext", str(candidates[0]))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"failed to create import spec for {candidates[0]}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_nanobind_loader_has_module_name():
@@ -56,7 +72,10 @@ def test_nanobind_override_accepts_explicit_in_tree_module(monkeypatch):
 
 
 def test_compiled_nanobind_extension_symbols_if_built():
-    ext = pytest.importorskip("natten_mlx._core._nanobind_ext", exc_type=ImportError)
+    if os.environ.get("NATTEN_REQUIRE_NANOBIND_EXT") == "1":
+        ext = _load_compiled_nanobind_extension_direct()
+    else:
+        ext = pytest.importorskip("natten_mlx._core._nanobind_ext", exc_type=ImportError)
     expected = [
         "na1d_forward",
         "na2d_forward",
@@ -79,3 +98,10 @@ def test_compiled_nanobind_extension_symbols_if_built():
     ]
     for name in expected:
         assert hasattr(ext, name), name
+
+
+def test_compiled_nanobind_extension_required_gate():
+    if os.environ.get("NATTEN_REQUIRE_NANOBIND_EXT") != "1":
+        pytest.skip("compiled nanobind extension requirement is disabled")
+    ext = _load_compiled_nanobind_extension_direct()
+    assert ext is not None

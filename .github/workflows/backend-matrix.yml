@@ -54,9 +54,55 @@ jobs:
           tests/test_autograd.py
           tests/test_support_matrix.py
 
+  nanobind-compiled-tests:
+    name: Nanobind Compiled Extension
+    runs-on: macos-14
+    timeout-minutes: 35
+    env:
+      UV_CACHE_DIR: /tmp/.uv-cache
+      NATTEN_BACKEND: nanobind
+      NATTEN_REQUIRE_NANOBIND_EXT: "1"
+      NATTEN_MLX_BUILD_NANOBIND: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install project dependencies
+        run: uv sync --extra dev
+
+      - name: Install build/runtime deps
+        run: uv pip install numpy setuptools wheel nanobind
+
+      - name: Build in-tree nanobind extension
+        run: uv pip install --no-build-isolation -e .
+
+      - name: Verify compiled extension artifact
+        run: >
+          uv run python -c
+          "from pathlib import Path; p=Path('src/natten_mlx/_core'); c=sorted(p.glob('_nanobind_ext*.so'));
+          assert c, 'missing compiled nanobind extension artifact'; print(c[0])"
+
+      - name: Run compiled-nanobind tests
+        run: >
+          uv run pytest -q
+          tests/test_nanobind_extension.py
+          tests/test_backends.py
+          tests/test_backend_matrix.py
+          tests/test_backward_parity.py
+
   backend-benchmark-smoke:
     name: Backend Benchmark Smoke
-    needs: backend-tests
+    needs:
+      - backend-tests
+      - nanobind-compiled-tests
     runs-on: macos-14
     timeout-minutes: 20
     env:

@@ -162,6 +162,9 @@ Backward support across backends uses explicit backend backward entrypoints for 
   - Kernel shape must match operator dimensionality: odd `K` (1D), square odd `(K, K)` (2D), cubic odd `(K, K, K)` (3D).
 - Fast Metal fused acceleration eligibility follows the same per-axis stride/dilation and causal rules, with the same odd/square/cubic kernel-shape requirement by dimensionality.
 - Unsupported accelerated configurations fall back to pure backend for correctness.
+
+## Runtime Notes
+
 - Nanobind tier delegates to fast-metal where available (same exact eligibility constraints), otherwise pure fallback.
 - MLX lazy evaluation applies; this package does not force evaluation.
 
