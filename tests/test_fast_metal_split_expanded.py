@@ -146,6 +146,35 @@ def test_fast_metal_na1d_split_stride_k9_causal_matches_pure_without_fallback(mo
     np.testing.assert_allclose(np.array(out_fast), np.array(out_pure), rtol=1e-5, atol=1e-5)
 
 
+def test_fast_metal_na1d_qk_vec4_uses_vec4_kernel_without_fallback(monkeypatch):
+    if not fast_metal.is_available():
+        pytest.skip("fast_metal unavailable")
+
+    q = mx.random.normal((1, 128, 4, 16))
+    k = mx.random.normal((1, 128, 4, 16))
+    ks = (7,)
+    st = (1,)
+    dil = (1,)
+    caus = (True,)
+    scale = 0.5
+
+    logits_pure = pure.na1d_qk_forward(q, k, ks, st, dil, caus, scale)
+    mx.eval(logits_pure)
+
+    def _no_qk_fallback(*_args, **_kwargs):
+        raise AssertionError("unexpected fallback to pure.na1d_qk_forward")
+
+    def _unexpected_scalar_kernel(*_args, **_kwargs):
+        raise AssertionError("unexpected scalar 1d qk kernel path")
+
+    monkeypatch.setattr(pure, "na1d_qk_forward", _no_qk_fallback)
+    monkeypatch.setattr(fast_metal, "_get_1d_qk_kernel", _unexpected_scalar_kernel)
+
+    logits_fast = fast_metal.na1d_qk_forward(q, k, ks, st, dil, caus, scale)
+    mx.eval(logits_fast)
+    np.testing.assert_allclose(np.array(logits_fast), np.array(logits_pure), rtol=1e-5, atol=1e-5)
+
+
 def test_fast_metal_na2d_split_stride_k9_causal_matches_pure_without_fallback(monkeypatch):
     if not fast_metal.is_available():
         pytest.skip("fast_metal unavailable")

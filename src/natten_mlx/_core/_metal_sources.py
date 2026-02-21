@@ -125,6 +125,62 @@ for (int ki = 0; ki < K; ki++) {{
 """
 
 
+def source_1d_qk_vec4(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int length = query_shape[2];
+const int dim = query_shape[3];
+const int dim4 = dim / 4;
+const int dilation = (int)dilation_param[0];
+const bool causal = ((int)causal_param[0]) != 0;
+const int K = {kernel_size};
+const int NH = {nh};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int i = gid.x;
+if (b >= batch_size || h >= heads || i >= length) return;
+
+int ni = 0;
+int ei = length;
+int pi = NH;
+if (!causal) {{
+    NATTEN_GET_WINDOW_START(ni, i, length, K, NH, dilation);
+    NATTEN_GET_WINDOW_END(ei, ni, length, K, dilation);
+    NATTEN_GET_PB_START(pi, i, length, K, NH, dilation);
+}}
+
+for (int ki = 0; ki < K; ki++) {{
+    int key_i = (causal ? (i - (K - 1) * dilation) : ni) + ki * dilation;
+    float score;
+    bool valid = causal
+        ? (key_i >= 0 && key_i <= i && key_i < length)
+        : (key_i >= 0 && key_i < ei);
+    if (valid) {{
+        float sum = 0.0f;
+        for (int d4 = 0; d4 < dim4; d4++) {{
+            int d0 = d4 * 4;
+            int q_base = (((b * heads + h) * length + i) * dim + d0);
+            int k_base = (((b * heads + h) * length + key_i) * dim + d0);
+            sum += query[q_base] * key[k_base];
+            sum += query[q_base + 1] * key[k_base + 1];
+            sum += query[q_base + 2] * key[k_base + 2];
+            sum += query[q_base + 3] * key[k_base + 3];
+        }}
+        int rpb_idx = h * (2 * K - 1) + (pi + ki);
+        score = sum + rpb[rpb_idx];
+    }} else {{
+        score = -INFINITY;
+    }}
+    int out_idx = (((b * heads + h) * length + i) * K + ki);
+    out[out_idx] = score;
+}}
+"""
+
+
 def source_1d_av(kernel_size: int) -> str:
     nh = _nh(kernel_size)
     return _HELPERS + f"""
@@ -726,6 +782,102 @@ for (int d = 0; d < dim; d++) {{
 """
 
 
+def source_1d_fused_vec4(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int length = query_shape[2];
+const int dim = query_shape[3];
+const int dim4 = dim / 4;
+const int stride = (int)stride_param[0];
+const int out_length = (length + stride - 1) / stride;
+const int dilation = (int)dilation_param[0];
+const bool causal = ((int)causal_param[0]) != 0;
+const float scale = scale_param[0];
+const int K = {kernel_size};
+const int NH = {nh};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int i_out = gid.x;
+if (b >= batch_size || h >= heads || i_out >= out_length) return;
+int i = i_out * stride;
+if (i >= length) return;
+
+int ni = 0;
+int ei = length;
+if (!causal) {{
+    NATTEN_GET_WINDOW_START(ni, i, length, K, NH, dilation);
+    NATTEN_GET_WINDOW_END(ei, ni, length, K, dilation);
+}}
+
+float logits[K];
+float probs[K];
+int key_pos[K];
+bool key_valid[K];
+
+float max_logit = -INFINITY;
+for (int ki = 0; ki < K; ki++) {{
+    int key_i = (causal ? (i - (K - 1) * dilation) : ni) + ki * dilation;
+    bool valid = causal
+        ? (key_i >= 0 && key_i <= i && key_i < length)
+        : (key_i >= 0 && key_i < ei);
+    key_pos[ki] = key_i;
+    key_valid[ki] = valid;
+    float score = -INFINITY;
+    if (valid) {{
+        float sum = 0.0f;
+        for (int d4 = 0; d4 < dim4; d4++) {{
+            int d0 = d4 * 4;
+            int q_base = (((b * heads + h) * length + i) * dim + d0);
+            int k_base = (((b * heads + h) * length + key_i) * dim + d0);
+            sum += query[q_base] * key[k_base];
+            sum += query[q_base + 1] * key[k_base + 1];
+            sum += query[q_base + 2] * key[k_base + 2];
+            sum += query[q_base + 3] * key[k_base + 3];
+        }}
+        score = sum * scale;
+    }}
+    logits[ki] = score;
+    max_logit = fmax(max_logit, score);
+}}
+
+float denom = 0.0f;
+for (int ki = 0; ki < K; ki++) {{
+    float p = exp(logits[ki] - max_logit);
+    probs[ki] = p;
+    denom += p;
+}}
+float inv_denom = denom > 0.0f ? 1.0f / denom : 0.0f;
+
+for (int d4 = 0; d4 < dim4; d4++) {{
+    int d0 = d4 * 4;
+    float acc0 = 0.0f;
+    float acc1 = 0.0f;
+    float acc2 = 0.0f;
+    float acc3 = 0.0f;
+    for (int ki = 0; ki < K; ki++) {{
+        int key_i = key_pos[ki];
+        if (key_valid[ki]) {{
+            float w = probs[ki] * inv_denom;
+            int v_base = (((b * heads + h) * length + key_i) * dim + d0);
+            acc0 += w * value[v_base];
+            acc1 += w * value[v_base + 1];
+            acc2 += w * value[v_base + 2];
+            acc3 += w * value[v_base + 3];
+        }}
+    }}
+    int out_base = (((b * heads + h) * out_length + i_out) * dim + d0);
+    out[out_base] = acc0;
+    out[out_base + 1] = acc1;
+    out[out_base + 2] = acc2;
+    out[out_base + 3] = acc3;
+}}
+"""
+
+
 def source_1d_fused_causal(kernel_size: int) -> str:
     return _HELPERS + f"""
 uint3 gid = thread_position_in_grid;
@@ -787,6 +939,86 @@ for (int d = 0; d < dim; d++) {{
     }}
     int out_idx = (((b * heads + h) * out_length + i_out) * dim + d);
     out[out_idx] = out_sum;
+}}
+"""
+
+
+def source_1d_fused_causal_vec4(kernel_size: int) -> str:
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int length = query_shape[2];
+const int dim = query_shape[3];
+const int dim4 = dim / 4;
+const int stride = (int)stride_param[0];
+const int out_length = (length + stride - 1) / stride;
+const int dilation = (int)dilation_param[0];
+const float scale = scale_param[0];
+const int K = {kernel_size};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int i_out = gid.x;
+if (b >= batch_size || h >= heads || i_out >= out_length) return;
+int i = i_out * stride;
+if (i >= length) return;
+
+float logits[K];
+float probs[K];
+
+float max_logit = -INFINITY;
+int anchor = i - (K - 1) * dilation;
+for (int ki = 0; ki < K; ki++) {{
+    int key_i = anchor + ki * dilation;
+    float score = -INFINITY;
+    if (key_i >= 0) {{
+        float sum = 0.0f;
+        for (int d4 = 0; d4 < dim4; d4++) {{
+            int d0 = d4 * 4;
+            int q_base = (((b * heads + h) * length + i) * dim + d0);
+            int k_base = (((b * heads + h) * length + key_i) * dim + d0);
+            sum += query[q_base] * key[k_base];
+            sum += query[q_base + 1] * key[k_base + 1];
+            sum += query[q_base + 2] * key[k_base + 2];
+            sum += query[q_base + 3] * key[k_base + 3];
+        }}
+        score = sum * scale;
+    }}
+    logits[ki] = score;
+    max_logit = fmax(max_logit, score);
+}}
+
+float denom = 0.0f;
+for (int ki = 0; ki < K; ki++) {{
+    float p = exp(logits[ki] - max_logit);
+    probs[ki] = p;
+    denom += p;
+}}
+float inv_denom = denom > 0.0f ? 1.0f / denom : 0.0f;
+
+for (int d4 = 0; d4 < dim4; d4++) {{
+    int d0 = d4 * 4;
+    float acc0 = 0.0f;
+    float acc1 = 0.0f;
+    float acc2 = 0.0f;
+    float acc3 = 0.0f;
+    for (int ki = 0; ki < K; ki++) {{
+        int key_i = anchor + ki * dilation;
+        if (key_i >= 0) {{
+            float w = probs[ki] * inv_denom;
+            int v_base = (((b * heads + h) * length + key_i) * dim + d0);
+            acc0 += w * value[v_base];
+            acc1 += w * value[v_base + 1];
+            acc2 += w * value[v_base + 2];
+            acc3 += w * value[v_base + 3];
+        }}
+    }}
+    int out_base = (((b * heads + h) * out_length + i_out) * dim + d0);
+    out[out_base] = acc0;
+    out[out_base + 1] = acc1;
+    out[out_base + 2] = acc2;
+    out[out_base + 3] = acc3;
 }}
 """
 

@@ -486,3 +486,15 @@ def test_grad_q_vec4_heuristic_supports_short_decode_lengths():
 
 def test_grad_q_vec4_threadgroup_long_mode():
     assert fast_metal._threadgroup_1d_qk_bwd_q_vec4(dim4=16, length=1024) == (16, 16, 1)
+
+
+def test_forward_vec4_heuristic():
+    assert fast_metal._use_vec4_1d_forward(length=128, head_dim=16)
+    assert fast_metal._use_vec4_1d_forward(length=256, head_dim=32)
+    assert not fast_metal._use_vec4_1d_forward(length=128, head_dim=12)
+
+
+def test_forward_native_input_keeps_fp16():
+    x = mx.random.normal((2, 8, 2, 16), dtype=mx.float16)
+    y = fast_metal._forward_native_input(x)
+    assert y.dtype == mx.float16

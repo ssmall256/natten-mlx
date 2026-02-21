@@ -60,6 +60,64 @@ def test_fast_metal_na1d_fused_causal_stride1_uses_causal_kernel_without_fallbac
     np.testing.assert_allclose(np.array(out_fast), np.array(out_pure), rtol=1e-5, atol=1e-5)
 
 
+def test_fast_metal_na1d_fused_vec4_noncausal_uses_vec4_kernel_without_fallback(monkeypatch):
+    if not fast_metal.is_available():
+        pytest.skip("fast_metal unavailable")
+
+    q = mx.random.normal((1, 128, 4, 16))
+    k = mx.random.normal((1, 128, 4, 16))
+    v = mx.random.normal((1, 128, 4, 16))
+    ks = (7,)
+    st = (1,)
+    dil = (1,)
+    caus = (False,)
+    scale = 0.5
+
+    out_pure = pure.na1d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_pure)
+
+    def _no_fallback(*_args, **_kwargs):
+        raise AssertionError("unexpected fallback to pure.na1d_forward")
+
+    def _unexpected_scalar_kernel(*_args, **_kwargs):
+        raise AssertionError("unexpected scalar 1d fused kernel path")
+
+    monkeypatch.setattr(pure, "na1d_forward", _no_fallback)
+    monkeypatch.setattr(fast_metal, "_get_1d_fused_kernel", _unexpected_scalar_kernel)
+    out_fast = fast_metal.na1d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_fast)
+    np.testing.assert_allclose(np.array(out_fast), np.array(out_pure), rtol=1e-5, atol=1e-5)
+
+
+def test_fast_metal_na1d_fused_vec4_causal_uses_vec4_kernel_without_fallback(monkeypatch):
+    if not fast_metal.is_available():
+        pytest.skip("fast_metal unavailable")
+
+    q = mx.random.normal((1, 128, 4, 16))
+    k = mx.random.normal((1, 128, 4, 16))
+    v = mx.random.normal((1, 128, 4, 16))
+    ks = (7,)
+    st = (1,)
+    dil = (1,)
+    caus = (True,)
+    scale = 0.5
+
+    out_pure = pure.na1d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_pure)
+
+    def _no_fallback(*_args, **_kwargs):
+        raise AssertionError("unexpected fallback to pure.na1d_forward")
+
+    def _unexpected_scalar_kernel(*_args, **_kwargs):
+        raise AssertionError("unexpected scalar 1d fused causal kernel path")
+
+    monkeypatch.setattr(pure, "na1d_forward", _no_fallback)
+    monkeypatch.setattr(fast_metal, "_get_1d_fused_causal_kernel", _unexpected_scalar_kernel)
+    out_fast = fast_metal.na1d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_fast)
+    np.testing.assert_allclose(np.array(out_fast), np.array(out_pure), rtol=1e-5, atol=1e-5)
+
+
 def test_fast_metal_na2d_fused_stride_causal_k9_matches_pure_without_fallback(monkeypatch):
     if not fast_metal.is_available():
         pytest.skip("fast_metal unavailable")
