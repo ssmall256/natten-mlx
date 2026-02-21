@@ -16,6 +16,10 @@ def has_mlx() -> bool:
     return True
 
 
+def has_fna() -> bool:
+    return False
+
+
 __all__ = [
     "na1d",
     "na2d",
@@ -28,4 +32,5 @@ __all__ = [
     "has_cuda",
     "has_mps",
     "has_mlx",
+    "has_fna",
 ]

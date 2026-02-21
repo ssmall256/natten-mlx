@@ -61,15 +61,14 @@ def check_stride_vs_kernel(stride: Iterable[int], kernel_size: Iterable[int]) ->
 def check_dilation_kernel_vs_input(
     dilation: Iterable[int], kernel_size: Iterable[int], input_spatial_shape: Iterable[int]
 ) -> None:
-    """Validate that dilated kernel coverage fits input in each dimension."""
+    """Validate dilation * kernel_size <= input size in each dimension."""
     for dim, (d, k, size) in enumerate(zip(dilation, kernel_size, input_spatial_shape)):
         if not isinstance(d, int):
             raise ValueError(f"dilation[{dim}] must be int, got {type(d)!r}")
         if d <= 0:
             raise ValueError(f"dilation[{dim}] must be positive, got {d}")
-        max_reach = (k - 1) * d + 1
-        if max_reach > size:
+        required = d * k
+        if required > size:
             raise ValueError(
-                f"dilated kernel coverage ({max_reach}) exceeds input size ({size}) "
-                f"at dim {dim}; got kernel_size={k}, dilation={d}"
+                f"dilation[{dim}] * kernel_size[{dim}] = {required} exceeds input size {size}"
             )

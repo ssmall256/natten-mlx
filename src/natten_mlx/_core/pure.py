@@ -211,7 +211,7 @@ def na1d_qk_forward(q, k, kernel_size, dilation):
     dil = dilation[0]
 
     qpos_np = np.arange(seqlen, dtype=np.int32)
-    indices, valid = _compute_neighbor_indices_1d(
+    indices, _ = _compute_neighbor_indices_1d(
         seqlen, ksize, dil, is_causal=False, query_positions=qpos_np
     )
 
@@ -221,10 +221,7 @@ def na1d_qk_forward(q, k, kernel_size, dilation):
     k_neighbors = mx.transpose(k_neighbors, axes=(0, 1, 3, 2, 4))
 
     logits = mx.sum(q[..., None, :] * k_neighbors, axis=-1)
-
-    valid_mask = valid[None, :, None, :]
-    neg_inf = mx.full(logits.shape, -float("inf"), dtype=logits.dtype)
-    return mx.where(valid_mask, logits, neg_inf)
+    return logits
 
 
 def na1d_av_forward(attn, v, kernel_size, dilation):
@@ -238,7 +235,7 @@ def na1d_av_forward(attn, v, kernel_size, dilation):
         )
 
     qpos_np = np.arange(out_len, dtype=np.int32)
-    indices, valid = _compute_neighbor_indices_1d(
+    indices, _ = _compute_neighbor_indices_1d(
         seqlen, kernel_size[0], dilation[0], is_causal=False, query_positions=qpos_np
     )
 
@@ -247,9 +244,7 @@ def na1d_av_forward(attn, v, kernel_size, dilation):
     v_neighbors = mx.reshape(v_neighbors, (batch, out_len, ksize, heads, head_dim))
     v_neighbors = mx.transpose(v_neighbors, axes=(0, 1, 3, 2, 4))
 
-    valid_mask = valid[None, :, None, :]
-    masked_attn = mx.where(valid_mask, attn, mx.zeros(attn.shape, dtype=attn.dtype))
-    return mx.sum(masked_attn[..., None] * v_neighbors, axis=-2)
+    return mx.sum(attn[..., None] * v_neighbors, axis=-2)
 
 
 def na2d_qk_forward(q, k, kernel_size, dilation):
@@ -261,7 +256,7 @@ def na2d_qk_forward(q, k, kernel_size, dilation):
     qh_np = np.arange(height, dtype=np.int32)
     qw_np = np.arange(width, dtype=np.int32)
 
-    indices, valid = _compute_neighbor_indices_2d(
+    indices, _ = _compute_neighbor_indices_2d(
         height,
         width,
         kernel_size,
@@ -280,10 +275,7 @@ def na2d_qk_forward(q, k, kernel_size, dilation):
     k_neighbors = mx.transpose(k_neighbors, axes=(0, 1, 2, 4, 3, 5))
 
     logits = mx.sum(q[..., None, :] * k_neighbors, axis=-1)
-
-    valid_mask = valid[None, :, :, None, :]
-    neg_inf = mx.full(logits.shape, -float("inf"), dtype=logits.dtype)
-    return mx.where(valid_mask, logits, neg_inf)
+    return logits
 
 
 def na2d_av_forward(attn, v, kernel_size, dilation):
@@ -300,7 +292,7 @@ def na2d_av_forward(attn, v, kernel_size, dilation):
     qh_np = np.arange(out_h, dtype=np.int32)
     qw_np = np.arange(out_w, dtype=np.int32)
 
-    indices, valid = _compute_neighbor_indices_2d(
+    indices, _ = _compute_neighbor_indices_2d(
         height,
         width,
         kernel_size,
@@ -318,6 +310,4 @@ def na2d_av_forward(attn, v, kernel_size, dilation):
     )
     v_neighbors = mx.transpose(v_neighbors, axes=(0, 1, 2, 4, 3, 5))
 
-    valid_mask = valid[None, :, :, None, :]
-    masked_attn = mx.where(valid_mask, attn, mx.zeros(attn.shape, dtype=attn.dtype))
-    return mx.sum(masked_attn[..., None] * v_neighbors, axis=-2)
+    return mx.sum(attn[..., None] * v_neighbors, axis=-2)

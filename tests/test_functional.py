@@ -3,7 +3,7 @@ import pytest
 
 mx = pytest.importorskip("mlx.core")
 
-from natten_mlx.functional import na1d, na2d
+from natten_mlx.functional import na1d, na1d_qk, na2d, na2d_qk
 
 
 def test_na1d_output_shape_with_stride():
@@ -38,6 +38,18 @@ def test_validation_errors():
     with pytest.raises(ValueError):
         na1d(q, q, q, kernel_size=3, stride=4)
 
+    q_strict = mx.random.normal((1, 5, 2, 2))
+    with pytest.raises(ValueError):
+        na1d(q_strict, q_strict, q_strict, kernel_size=3, dilation=2)
+    with pytest.raises(ValueError):
+        na1d_qk(q_strict, q_strict, kernel_size=3, dilation=2)
+
     q2 = mx.random.normal((1, 4, 4, 2, 2))
     with pytest.raises(ValueError):
         na2d(q2, q2, q2, kernel_size=(5, 5), dilation=(2, 2))
+
+    q2_strict = mx.random.normal((1, 5, 5, 2, 2))
+    with pytest.raises(ValueError):
+        na2d(q2_strict, q2_strict, q2_strict, kernel_size=(3, 3), dilation=(2, 2))
+    with pytest.raises(ValueError):
+        na2d_qk(q2_strict, q2_strict, kernel_size=(3, 3), dilation=(2, 2))
