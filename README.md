@@ -68,6 +68,19 @@ uv pip install --no-build-isolation "natten==0.14.6"
 NATTEN_UPSTREAM_PARITY=1 uv run python -m pytest tests/test_upstream_parity.py -q
 ```
 
+## Backend Matrix CI
+
+- Backend matrix tests are gated in `.github/workflows/backend-matrix.yml` with forced:
+  - `NATTEN_BACKEND=pure`
+  - `NATTEN_BACKEND=fast_metal`
+  - `NATTEN_BACKEND=nanobind`
+- Includes benchmark smoke run with JSON artifact upload and non-failing perf warnings.
+- Local benchmark smoke run:
+
+```bash
+uv run python benchmarks/backend_smoke.py --output benchmarks/backend-smoke.json --github-warnings
+```
+
 ## natten-mlx vs natten-mps
 
 - Use `natten-mlx` for MLX-native projects.

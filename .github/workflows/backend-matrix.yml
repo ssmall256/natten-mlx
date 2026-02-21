@@ -1,0 +1,93 @@
+name: Backend Matrix
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  backend-tests:
+    name: Backend Tests (${{ matrix.backend }})
+    runs-on: macos-14
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        backend:
+          - pure
+          - fast_metal
+          - nanobind
+    env:
+      UV_CACHE_DIR: /tmp/.uv-cache
+      NATTEN_BACKEND: ${{ matrix.backend }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install project dependencies
+        run: uv sync --extra dev
+
+      - name: Install numpy runtime dependency
+        run: uv pip install numpy
+
+      - name: Run backend-matrix tests
+        run: >
+          uv run pytest -q
+          tests/test_backend_matrix.py
+          tests/test_backends.py
+          tests/test_functional.py
+          tests/test_na1d.py
+          tests/test_na2d.py
+          tests/test_autograd.py
+          tests/test_support_matrix.py
+
+  backend-benchmark-smoke:
+    name: Backend Benchmark Smoke
+    needs: backend-tests
+    runs-on: macos-14
+    timeout-minutes: 20
+    env:
+      UV_CACHE_DIR: /tmp/.uv-cache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install project dependencies
+        run: uv sync --extra dev
+
+      - name: Install numpy runtime dependency
+        run: uv pip install numpy
+
+      - name: Run benchmark smoke (non-blocking warnings)
+        run: >
+          uv run python benchmarks/backend_smoke.py
+          --output benchmarks/backend-smoke.json
+          --warmup 3
+          --trials 8
+          --warn-threshold 1.25
+          --github-warnings
+
+      - name: Upload benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-benchmark-smoke
+          path: benchmarks/backend-smoke.json
+          if-no-files-found: error
