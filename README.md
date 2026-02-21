@@ -186,7 +186,7 @@ Backward support across backends uses explicit backend backward entrypoints for 
 
 - Nanobind tier delegates to fast-metal where available (same exact eligibility constraints), otherwise pure fallback.
 - Fast Metal forward no longer forces `float32` materialization for `float16`/`bfloat16` inputs; kernels accumulate in `float32` and outputs are cast back to input dtype.
-- 1D fast paths now include vec4 forward kernels (`na1d_qk` and fused `na1d`) for `head_dim % 4 == 0`, including causal fused coverage.
+- Fast Metal vec4 forward kernels now cover split `na1d_qk`/`na1d_av`, split `na2d_qk`, split `na3d_qk`, and fused `na1d`/`na2d`/`na3d` when `head_dim % 4 == 0` (including causal paths).
 - 2D/3D split `qk_backward` now uses inverse-map `grad_k` kernels (matching the 1D strategy) to avoid reverse-search hotspot behavior.
 - The required backward guardrail includes dedicated split `qk_backward` 2D/3D `grad_k` hotspot cases.
 - Experimental AV-backward fusion kernels (`NATTEN_MLX_AV_BWD_FUSION=1`) now use inverse-map `grad_v` accumulation, but default remains split AV backward because fused is not consistently faster across representative 1D/2D/3D shapes.

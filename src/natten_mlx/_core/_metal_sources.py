@@ -225,6 +225,62 @@ for (int d = 0; d < dim; d++) {{
 """
 
 
+def source_1d_av_vec4(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = attention_probs_shape[0];
+const int heads = attention_probs_shape[1];
+const int length = attention_probs_shape[2];
+const int dim = value_shape[3];
+const int dim4 = dim / 4;
+const int dilation = (int)dilation_param[0];
+const bool causal = ((int)causal_param[0]) != 0;
+const int K = {kernel_size};
+const int NH = {nh};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int i = gid.x;
+if (b >= batch_size || h >= heads || i >= length) return;
+
+int ni = 0;
+int ei = length;
+if (!causal) {{
+    NATTEN_GET_WINDOW_START(ni, i, length, K, NH, dilation);
+    NATTEN_GET_WINDOW_END(ei, ni, length, K, dilation);
+}}
+
+for (int d4 = 0; d4 < dim4; d4++) {{
+    int d0 = d4 * 4;
+    float acc0 = 0.0f;
+    float acc1 = 0.0f;
+    float acc2 = 0.0f;
+    float acc3 = 0.0f;
+    for (int ki = 0; ki < K; ki++) {{
+        int val_i = (causal ? (i - (K - 1) * dilation) : ni) + ki * dilation;
+        bool valid = causal
+            ? (val_i >= 0 && val_i <= i && val_i < length)
+            : (val_i >= 0 && val_i < ei);
+        if (valid) {{
+            int attn_idx = (((b * heads + h) * length + i) * K + ki);
+            float w = attention_probs[attn_idx];
+            int val_base = (((b * heads + h) * length + val_i) * dim + d0);
+            acc0 += w * value[val_base];
+            acc1 += w * value[val_base + 1];
+            acc2 += w * value[val_base + 2];
+            acc3 += w * value[val_base + 3];
+        }}
+    }}
+    int out_base = (((b * heads + h) * length + i) * dim + d0);
+    out[out_base] = acc0;
+    out[out_base + 1] = acc1;
+    out[out_base + 2] = acc2;
+    out[out_base + 3] = acc3;
+}}
+"""
+
+
 def source_2d_qk(kernel_size: int) -> str:
     nh = _nh(kernel_size)
     area = _area(kernel_size)
@@ -284,6 +340,85 @@ for (int ki = 0; ki < K; ki++) {{
                 int q_idx = (((b * heads + h) * height + i) * width + j) * dim + d;
                 int k_idx = (((b * heads + h) * height + key_i) * width + key_j) * dim + d;
                 sum += query[q_idx] * key[k_idx];
+            }}
+            int rpb_size = (2 * K - 1);
+            int rpb_idx = h * rpb_size * rpb_size + (pi + ki) * rpb_size + (pj + kj);
+            score = sum + rpb[rpb_idx];
+        }} else {{
+            score = -INFINITY;
+        }}
+        int out_idx = (((b * heads + h) * height + i) * width + j) * L + neighbor_idx;
+        out[out_idx] = score;
+        neighbor_idx++;
+    }}
+}}
+"""
+
+
+def source_2d_qk_vec4(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    area = _area(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int height = query_shape[2];
+const int width = query_shape[3];
+const int dim = query_shape[4];
+const int dim4 = dim / 4;
+const int dilation_h = (int)dilation_param[0];
+const int dilation_w = (int)dilation_param[1];
+const bool causal_h = ((int)causal_param[0]) != 0;
+const bool causal_w = ((int)causal_param[1]) != 0;
+const int K = {kernel_size};
+const int NH = {nh};
+const int L = {area};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int i = gid.y;
+int j = gid.x;
+if (b >= batch_size || h >= heads || i >= height || j >= width) return;
+
+int ni = 0;
+int nj = 0;
+int ei = height;
+int ej = width;
+int pi = NH;
+int pj = NH;
+if (!causal_h) {{
+    NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation_h);
+    NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation_h);
+    NATTEN_GET_PB_START(pi, i, height, K, NH, dilation_h);
+}}
+if (!causal_w) {{
+    NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation_w);
+    NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
+    NATTEN_GET_PB_START(pj, j, width, K, NH, dilation_w);
+}}
+
+int neighbor_idx = 0;
+for (int ki = 0; ki < K; ki++) {{
+    for (int kj = 0; kj < K; kj++) {{
+        int key_i = (causal_h ? (i - (K - 1) * dilation_h) : ni) + ki * dilation_h;
+        int key_j = (causal_w ? (j - (K - 1) * dilation_w) : nj) + kj * dilation_w;
+        float score;
+        bool valid_i = causal_h
+            ? (key_i >= 0 && key_i <= i && key_i < height)
+            : (key_i >= 0 && key_i < ei);
+        bool valid_j = causal_w
+            ? (key_j >= 0 && key_j <= j && key_j < width)
+            : (key_j >= 0 && key_j < ej);
+        if (valid_i && valid_j) {{
+            float sum = 0.0f;
+            for (int d4 = 0; d4 < dim4; d4++) {{
+                int d0 = d4 * 4;
+                int q_base = ((((b * heads + h) * height + i) * width + j) * dim + d0);
+                int k_base = ((((b * heads + h) * height + key_i) * width + key_j) * dim + d0);
+                sum += query[q_base] * key[k_base];
+                sum += query[q_base + 1] * key[k_base + 1];
+                sum += query[q_base + 2] * key[k_base + 2];
+                sum += query[q_base + 3] * key[k_base + 3];
             }}
             int rpb_size = (2 * K - 1);
             int rpb_idx = h * rpb_size * rpb_size + (pi + ki) * rpb_size + (pj + kj);
@@ -440,6 +575,105 @@ for (int kz = 0; kz < K; kz++) {{
                     int q_idx = ((((b * heads + h) * depth + z) * height + i) * width + j) * dim + d;
                     int k_idx = ((((b * heads + h) * depth + key_z) * height + key_i) * width + key_j) * dim + d;
                     sum += query[q_idx] * key[k_idx];
+                }}
+                int rpb_size = (2 * K - 1);
+                int rpb_idx = ((h * rpb_size + (pz + kz)) * rpb_size + (pi + ki)) * rpb_size + (pj + kj);
+                score = sum + rpb[rpb_idx];
+            }} else {{
+                score = -INFINITY;
+            }}
+            int out_idx = ((((b * heads + h) * depth + z) * height + i) * width + j) * L + neighbor_idx;
+            out[out_idx] = score;
+            neighbor_idx++;
+        }}
+    }}
+}}
+"""
+
+
+def source_3d_qk_vec4(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    volume = _volume(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int depth = query_shape[2];
+const int height = query_shape[3];
+const int width = query_shape[4];
+const int dim = query_shape[5];
+const int dim4 = dim / 4;
+const int dilation_d = (int)dilation_param[0];
+const int dilation_h = (int)dilation_param[1];
+const int dilation_w = (int)dilation_param[2];
+const bool causal_d = ((int)causal_param[0]) != 0;
+const bool causal_h = ((int)causal_param[1]) != 0;
+const bool causal_w = ((int)causal_param[2]) != 0;
+const int K = {kernel_size};
+const int NH = {nh};
+const int L = {volume};
+
+int z = gid.z % depth;
+int bh = gid.z / depth;
+int b = bh / heads;
+int h = bh % heads;
+int i = gid.y;
+int j = gid.x;
+if (b >= batch_size || h >= heads || z >= depth || i >= height || j >= width) return;
+
+int nz = 0;
+int ni = 0;
+int nj = 0;
+int ez = depth;
+int ei = height;
+int ej = width;
+int pz = NH;
+int pi = NH;
+int pj = NH;
+if (!causal_d) {{
+    NATTEN_GET_WINDOW_START(nz, z, depth, K, NH, dilation_d);
+    NATTEN_GET_WINDOW_END(ez, nz, depth, K, dilation_d);
+    NATTEN_GET_PB_START(pz, z, depth, K, NH, dilation_d);
+}}
+if (!causal_h) {{
+    NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation_h);
+    NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation_h);
+    NATTEN_GET_PB_START(pi, i, height, K, NH, dilation_h);
+}}
+if (!causal_w) {{
+    NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation_w);
+    NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
+    NATTEN_GET_PB_START(pj, j, width, K, NH, dilation_w);
+}}
+
+int neighbor_idx = 0;
+for (int kz = 0; kz < K; kz++) {{
+    for (int ki = 0; ki < K; ki++) {{
+        for (int kj = 0; kj < K; kj++) {{
+            int key_z = (causal_d ? (z - (K - 1) * dilation_d) : nz) + kz * dilation_d;
+            int key_i = (causal_h ? (i - (K - 1) * dilation_h) : ni) + ki * dilation_h;
+            int key_j = (causal_w ? (j - (K - 1) * dilation_w) : nj) + kj * dilation_w;
+            float score;
+            bool valid_z = causal_d
+                ? (key_z >= 0 && key_z <= z && key_z < depth)
+                : (key_z >= 0 && key_z < ez);
+            bool valid_i = causal_h
+                ? (key_i >= 0 && key_i <= i && key_i < height)
+                : (key_i >= 0 && key_i < ei);
+            bool valid_j = causal_w
+                ? (key_j >= 0 && key_j <= j && key_j < width)
+                : (key_j >= 0 && key_j < ej);
+            if (valid_z && valid_i && valid_j) {{
+                float sum = 0.0f;
+                for (int d4 = 0; d4 < dim4; d4++) {{
+                    int d0 = d4 * 4;
+                    int q_base = (((((b * heads + h) * depth + z) * height + i) * width + j) * dim + d0);
+                    int k_base =
+                        (((((b * heads + h) * depth + key_z) * height + key_i) * width + key_j) * dim + d0);
+                    sum += query[q_base] * key[k_base];
+                    sum += query[q_base + 1] * key[k_base + 1];
+                    sum += query[q_base + 2] * key[k_base + 2];
+                    sum += query[q_base + 3] * key[k_base + 3];
                 }}
                 int rpb_size = (2 * K - 1);
                 int rpb_idx = ((h * rpb_size + (pz + kz)) * rpb_size + (pi + ki)) * rpb_size + (pj + kj);
@@ -688,6 +922,155 @@ for (int d = 0; d < dim; d++) {{
     }}
     int out_idx = ((((b * heads + h) * out_depth + out_z) * out_height + out_i) * out_width + out_j) * dim + d;
     out[out_idx] = out_sum;
+}}
+"""
+
+
+def source_3d_fused_vec4(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    volume = _volume(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int depth = query_shape[2];
+const int height = query_shape[3];
+const int width = query_shape[4];
+const int dim = query_shape[5];
+const int dim4 = dim / 4;
+const int stride_d = (int)stride_param[0];
+const int stride_h = (int)stride_param[1];
+const int stride_w = (int)stride_param[2];
+const int out_depth = (depth + stride_d - 1) / stride_d;
+const int out_height = (height + stride_h - 1) / stride_h;
+const int out_width = (width + stride_w - 1) / stride_w;
+const int dilation_d = (int)dilation_param[0];
+const int dilation_h = (int)dilation_param[1];
+const int dilation_w = (int)dilation_param[2];
+const bool causal_d = ((int)causal_param[0]) != 0;
+const bool causal_h = ((int)causal_param[1]) != 0;
+const bool causal_w = ((int)causal_param[2]) != 0;
+const float scale = scale_param[0];
+const int K = {kernel_size};
+const int NH = {nh};
+const int L = {volume};
+
+int out_z = gid.z % out_depth;
+int bh = gid.z / out_depth;
+int b = bh / heads;
+int h = bh % heads;
+int out_i = gid.y;
+int out_j = gid.x;
+if (b >= batch_size || h >= heads || out_z >= out_depth || out_i >= out_height || out_j >= out_width) return;
+
+int z = out_z * stride_d;
+int i = out_i * stride_h;
+int j = out_j * stride_w;
+if (z >= depth || i >= height || j >= width) return;
+
+int nz = 0;
+int ni = 0;
+int nj = 0;
+int ez = depth;
+int ei = height;
+int ej = width;
+if (!causal_d) {{
+    NATTEN_GET_WINDOW_START(nz, z, depth, K, NH, dilation_d);
+    NATTEN_GET_WINDOW_END(ez, nz, depth, K, dilation_d);
+}}
+if (!causal_h) {{
+    NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation_h);
+    NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation_h);
+}}
+if (!causal_w) {{
+    NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation_w);
+    NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
+}}
+
+float logits[L];
+float probs[L];
+int key_z_arr[L];
+int key_i_arr[L];
+int key_j_arr[L];
+bool key_valid_arr[L];
+
+float max_logit = -INFINITY;
+int neighbor_idx = 0;
+for (int kz = 0; kz < K; kz++) {{
+    for (int ki = 0; ki < K; ki++) {{
+        for (int kj = 0; kj < K; kj++) {{
+            int key_z = (causal_d ? (z - (K - 1) * dilation_d) : nz) + kz * dilation_d;
+            int key_i = (causal_h ? (i - (K - 1) * dilation_h) : ni) + ki * dilation_h;
+            int key_j = (causal_w ? (j - (K - 1) * dilation_w) : nj) + kj * dilation_w;
+            bool valid_z = causal_d
+                ? (key_z >= 0 && key_z <= z && key_z < depth)
+                : (key_z >= 0 && key_z < ez);
+            bool valid_i = causal_h
+                ? (key_i >= 0 && key_i <= i && key_i < height)
+                : (key_i >= 0 && key_i < ei);
+            bool valid_j = causal_w
+                ? (key_j >= 0 && key_j <= j && key_j < width)
+                : (key_j >= 0 && key_j < ej);
+            bool valid = valid_z && valid_i && valid_j;
+            key_z_arr[neighbor_idx] = key_z;
+            key_i_arr[neighbor_idx] = key_i;
+            key_j_arr[neighbor_idx] = key_j;
+            key_valid_arr[neighbor_idx] = valid;
+            float score = -INFINITY;
+            if (valid) {{
+                float sum = 0.0f;
+                for (int d4 = 0; d4 < dim4; d4++) {{
+                    int d0 = d4 * 4;
+                    int q_base = (((((b * heads + h) * depth + z) * height + i) * width + j) * dim + d0);
+                    int k_base =
+                        (((((b * heads + h) * depth + key_z) * height + key_i) * width + key_j) * dim + d0);
+                    sum += query[q_base] * key[k_base];
+                    sum += query[q_base + 1] * key[k_base + 1];
+                    sum += query[q_base + 2] * key[k_base + 2];
+                    sum += query[q_base + 3] * key[k_base + 3];
+                }}
+                score = sum * scale;
+            }}
+            logits[neighbor_idx] = score;
+            max_logit = fmax(max_logit, score);
+            neighbor_idx++;
+        }}
+    }}
+}}
+
+float denom = 0.0f;
+for (int n = 0; n < L; n++) {{
+    float p = exp(logits[n] - max_logit);
+    probs[n] = p;
+    denom += p;
+}}
+float inv_denom = denom > 0.0f ? 1.0f / denom : 0.0f;
+
+for (int d4 = 0; d4 < dim4; d4++) {{
+    int d0 = d4 * 4;
+    float acc0 = 0.0f;
+    float acc1 = 0.0f;
+    float acc2 = 0.0f;
+    float acc3 = 0.0f;
+    for (int n = 0; n < L; n++) {{
+        if (key_valid_arr[n]) {{
+            int key_z = key_z_arr[n];
+            int key_i = key_i_arr[n];
+            int key_j = key_j_arr[n];
+            float w = probs[n] * inv_denom;
+            int v_base = (((((b * heads + h) * depth + key_z) * height + key_i) * width + key_j) * dim + d0);
+            acc0 += w * value[v_base];
+            acc1 += w * value[v_base + 1];
+            acc2 += w * value[v_base + 2];
+            acc3 += w * value[v_base + 3];
+        }}
+    }}
+    int out_base =
+        (((((b * heads + h) * out_depth + out_z) * out_height + out_i) * out_width + out_j) * dim + d0);
+    out[out_base] = acc0;
+    out[out_base + 1] = acc1;
+    out[out_base + 2] = acc2;
+    out[out_base + 3] = acc3;
 }}
 """
 
@@ -1144,6 +1527,129 @@ for (int d = 0; d < dim; d++) {{
     }}
     int out_idx = (((b * heads + h) * out_height + i_out) * out_width + j_out) * dim + d;
     out[out_idx] = out_sum;
+}}
+"""
+
+
+def source_2d_fused_vec4(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    area = _area(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int height = query_shape[2];
+const int width = query_shape[3];
+const int dim = query_shape[4];
+const int dim4 = dim / 4;
+const int stride_h = (int)stride_param[0];
+const int stride_w = (int)stride_param[1];
+const int out_height = (height + stride_h - 1) / stride_h;
+const int out_width = (width + stride_w - 1) / stride_w;
+const int dilation_h = (int)dilation_param[0];
+const int dilation_w = (int)dilation_param[1];
+const bool causal_h = ((int)causal_param[0]) != 0;
+const bool causal_w = ((int)causal_param[1]) != 0;
+const float scale = scale_param[0];
+const int K = {kernel_size};
+const int NH = {nh};
+const int L = {area};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int i_out = gid.y;
+int j_out = gid.x;
+if (b >= batch_size || h >= heads || i_out >= out_height || j_out >= out_width) return;
+int i = i_out * stride_h;
+int j = j_out * stride_w;
+if (i >= height || j >= width) return;
+
+int ni = 0;
+int nj = 0;
+int ei = height;
+int ej = width;
+if (!causal_h) {{
+    NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation_h);
+    NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation_h);
+}}
+if (!causal_w) {{
+    NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation_w);
+    NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
+}}
+
+float logits[L];
+float probs[L];
+int key_i_arr[L];
+int key_j_arr[L];
+bool key_valid_arr[L];
+
+float max_logit = -INFINITY;
+int neighbor_idx = 0;
+for (int ki = 0; ki < K; ki++) {{
+    for (int kj = 0; kj < K; kj++) {{
+        int key_i = (causal_h ? (i - (K - 1) * dilation_h) : ni) + ki * dilation_h;
+        int key_j = (causal_w ? (j - (K - 1) * dilation_w) : nj) + kj * dilation_w;
+        bool valid_i = causal_h
+            ? (key_i >= 0 && key_i <= i && key_i < height)
+            : (key_i >= 0 && key_i < ei);
+        bool valid_j = causal_w
+            ? (key_j >= 0 && key_j <= j && key_j < width)
+            : (key_j >= 0 && key_j < ej);
+        bool valid = valid_i && valid_j;
+        key_i_arr[neighbor_idx] = key_i;
+        key_j_arr[neighbor_idx] = key_j;
+        key_valid_arr[neighbor_idx] = valid;
+        float score = -INFINITY;
+        if (valid) {{
+            float sum = 0.0f;
+            for (int d4 = 0; d4 < dim4; d4++) {{
+                int d0 = d4 * 4;
+                int q_base = ((((b * heads + h) * height + i) * width + j) * dim + d0);
+                int k_base = ((((b * heads + h) * height + key_i) * width + key_j) * dim + d0);
+                sum += query[q_base] * key[k_base];
+                sum += query[q_base + 1] * key[k_base + 1];
+                sum += query[q_base + 2] * key[k_base + 2];
+                sum += query[q_base + 3] * key[k_base + 3];
+            }}
+            score = sum * scale;
+        }}
+        logits[neighbor_idx] = score;
+        max_logit = fmax(max_logit, score);
+        neighbor_idx++;
+    }}
+}}
+
+float denom = 0.0f;
+for (int n = 0; n < L; n++) {{
+    float p = exp(logits[n] - max_logit);
+    probs[n] = p;
+    denom += p;
+}}
+float inv_denom = denom > 0.0f ? 1.0f / denom : 0.0f;
+
+for (int d4 = 0; d4 < dim4; d4++) {{
+    int d0 = d4 * 4;
+    float acc0 = 0.0f;
+    float acc1 = 0.0f;
+    float acc2 = 0.0f;
+    float acc3 = 0.0f;
+    for (int n = 0; n < L; n++) {{
+        int key_i = key_i_arr[n];
+        int key_j = key_j_arr[n];
+        if (key_valid_arr[n]) {{
+            float w = probs[n] * inv_denom;
+            int v_base = ((((b * heads + h) * height + key_i) * width + key_j) * dim + d0);
+            acc0 += w * value[v_base];
+            acc1 += w * value[v_base + 1];
+            acc2 += w * value[v_base + 2];
+            acc3 += w * value[v_base + 3];
+        }}
+    }}
+    int out_base = ((((b * heads + h) * out_height + i_out) * out_width + j_out) * dim + d0);
+    out[out_base] = acc0;
+    out[out_base + 1] = acc1;
+    out[out_base + 2] = acc2;
+    out[out_base + 3] = acc3;
 }}
 """
 

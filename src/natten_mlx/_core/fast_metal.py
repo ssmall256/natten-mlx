@@ -11,6 +11,7 @@ import numpy as np
 from . import pure
 from ._metal_sources import (
     source_1d_av,
+    source_1d_av_vec4,
     source_1d_av_backward_attn,
     source_1d_av_backward_fused,
     source_1d_av_backward_v,
@@ -31,8 +32,10 @@ from ._metal_sources import (
     source_2d_av_backward_v,
     source_2d_av_backward_v_vec4,
     source_2d_fused,
+    source_2d_fused_vec4,
     source_2d_fused_causal,
     source_2d_qk,
+    source_2d_qk_vec4,
     source_2d_qk_backward_q,
     source_2d_qk_backward_q_vec4,
     source_2d_qk_backward_k,
@@ -43,8 +46,10 @@ from ._metal_sources import (
     source_3d_av_backward_v,
     source_3d_av_backward_v_vec4,
     source_3d_fused,
+    source_3d_fused_vec4,
     source_3d_fused_causal,
     source_3d_qk,
+    source_3d_qk_vec4,
     source_3d_qk_backward_q,
     source_3d_qk_backward_q_vec4,
     source_3d_qk_backward_k,
@@ -55,17 +60,22 @@ _KERNEL_BUILD_FAILED = False
 _QK_1D_KERNELS: dict[int, Callable] = {}
 _QK_1D_VEC4_KERNELS: dict[int, Callable] = {}
 _AV_1D_KERNELS: dict[int, Callable] = {}
+_AV_1D_VEC4_KERNELS: dict[int, Callable] = {}
 _QK_2D_KERNELS: dict[int, Callable] = {}
+_QK_2D_VEC4_KERNELS: dict[int, Callable] = {}
 _AV_2D_KERNELS: dict[int, Callable] = {}
 _QK_3D_KERNELS: dict[int, Callable] = {}
+_QK_3D_VEC4_KERNELS: dict[int, Callable] = {}
 _AV_3D_KERNELS: dict[int, Callable] = {}
 _FUSED_1D_KERNELS: dict[int, Callable] = {}
 _FUSED_1D_VEC4_KERNELS: dict[int, Callable] = {}
 _FUSED_1D_CAUSAL_KERNELS: dict[int, Callable] = {}
 _FUSED_1D_CAUSAL_VEC4_KERNELS: dict[int, Callable] = {}
 _FUSED_2D_KERNELS: dict[int, Callable] = {}
+_FUSED_2D_VEC4_KERNELS: dict[int, Callable] = {}
 _FUSED_2D_CAUSAL_KERNELS: dict[tuple[int, int, int], Callable] = {}
 _FUSED_3D_KERNELS: dict[int, Callable] = {}
+_FUSED_3D_VEC4_KERNELS: dict[int, Callable] = {}
 _FUSED_3D_CAUSAL_KERNELS: dict[tuple[int, int, int, int], Callable] = {}
 _QK_BWD_K_1D_KERNELS: dict[int, Callable] = {}
 _QK_BWD_K_INV_1D_KERNELS: dict[int, Callable] = {}
@@ -232,6 +242,18 @@ def _use_vec4_1d_forward(length: int, head_dim: int) -> bool:
     if head_dim % 4 != 0 or head_dim < 16:
         return False
     return length > 0
+
+
+def _use_vec4_2d_forward(height: int, width: int, head_dim: int) -> bool:
+    if head_dim % 4 != 0 or head_dim < 16:
+        return False
+    return height > 0 and width > 0
+
+
+def _use_vec4_3d_forward(depth: int, height: int, width: int, head_dim: int) -> bool:
+    if head_dim % 4 != 0 or head_dim < 16:
+        return False
+    return depth > 0 and height > 0 and width > 0
 
 
 def _to_metal_1d(x: mx.array) -> mx.array:
@@ -759,6 +781,18 @@ def _get_1d_av_kernel(kernel_size: int):
     return _AV_1D_KERNELS[kernel_size]
 
 
+def _get_1d_av_vec4_kernel(kernel_size: int):
+    if kernel_size not in _AV_1D_VEC4_KERNELS:
+        _AV_1D_VEC4_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na1d_av4_k{kernel_size}",
+            input_names=["attention_probs", "value", "dilation_param", "causal_param"],
+            output_names=["out"],
+            source=source_1d_av_vec4(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _AV_1D_VEC4_KERNELS[kernel_size]
+
+
 def _get_2d_qk_kernel(kernel_size: int):
     if kernel_size not in _QK_2D_KERNELS:
         _QK_2D_KERNELS[kernel_size] = mx.fast.metal_kernel(
@@ -769,6 +803,18 @@ def _get_2d_qk_kernel(kernel_size: int):
             ensure_row_contiguous=True,
         )
     return _QK_2D_KERNELS[kernel_size]
+
+
+def _get_2d_qk_vec4_kernel(kernel_size: int):
+    if kernel_size not in _QK_2D_VEC4_KERNELS:
+        _QK_2D_VEC4_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na2d_qk4_k{kernel_size}",
+            input_names=["query", "key", "rpb", "dilation_param", "causal_param"],
+            output_names=["out"],
+            source=source_2d_qk_vec4(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _QK_2D_VEC4_KERNELS[kernel_size]
 
 
 def _get_2d_av_kernel(kernel_size: int):
@@ -793,6 +839,18 @@ def _get_3d_qk_kernel(kernel_size: int):
             ensure_row_contiguous=True,
         )
     return _QK_3D_KERNELS[kernel_size]
+
+
+def _get_3d_qk_vec4_kernel(kernel_size: int):
+    if kernel_size not in _QK_3D_VEC4_KERNELS:
+        _QK_3D_VEC4_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na3d_qk4_k{kernel_size}",
+            input_names=["query", "key", "rpb", "dilation_param", "causal_param"],
+            output_names=["out"],
+            source=source_3d_qk_vec4(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _QK_3D_VEC4_KERNELS[kernel_size]
 
 
 def _get_3d_av_kernel(kernel_size: int):
@@ -825,6 +883,26 @@ def _get_3d_fused_kernel(kernel_size: int):
             ensure_row_contiguous=True,
         )
     return _FUSED_3D_KERNELS[kernel_size]
+
+
+def _get_3d_fused_vec4_kernel(kernel_size: int):
+    if kernel_size not in _FUSED_3D_VEC4_KERNELS:
+        _FUSED_3D_VEC4_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na3d_fused4_k{kernel_size}",
+            input_names=[
+                "query",
+                "key",
+                "value",
+                "stride_param",
+                "dilation_param",
+                "causal_param",
+                "scale_param",
+            ],
+            output_names=["out"],
+            source=source_3d_fused_vec4(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _FUSED_3D_VEC4_KERNELS[kernel_size]
 
 
 def _get_3d_fused_causal_kernel(kernel_size: int, causal_d: int, causal_h: int, causal_w: int):
@@ -948,6 +1026,26 @@ def _get_2d_fused_kernel(kernel_size: int):
             ensure_row_contiguous=True,
         )
     return _FUSED_2D_KERNELS[kernel_size]
+
+
+def _get_2d_fused_vec4_kernel(kernel_size: int):
+    if kernel_size not in _FUSED_2D_VEC4_KERNELS:
+        _FUSED_2D_VEC4_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na2d_fused4_k{kernel_size}",
+            input_names=[
+                "query",
+                "key",
+                "value",
+                "stride_param",
+                "dilation_param",
+                "causal_param",
+                "scale_param",
+            ],
+            output_names=["out"],
+            source=source_2d_fused_vec4(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _FUSED_2D_VEC4_KERNELS[kernel_size]
 
 
 def _get_2d_fused_causal_kernel(kernel_size: int, causal_h: int, causal_w: int):
@@ -1601,10 +1699,15 @@ def na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
             and dil_h == 1
             and dil_w == 1
         )
+        use_vec4 = _use_vec4_2d_forward(height, width, q.shape[-1])
         kernel = (
-            _get_2d_fused_causal_kernel(ksize, causal_h, causal_w)
-            if use_causal_kernel
-            else _get_2d_fused_kernel(ksize)
+            _get_2d_fused_vec4_kernel(ksize)
+            if use_vec4
+            else (
+                _get_2d_fused_causal_kernel(ksize, causal_h, causal_w)
+                if use_causal_kernel
+                else _get_2d_fused_kernel(ksize)
+            )
         )
         q_m = _to_metal_2d(_forward_native_input(q))
         k_m = _to_metal_2d(_forward_native_input(k))
@@ -1614,9 +1717,13 @@ def na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
         causal_param = mx.array([causal_h, causal_w], dtype=mx.int32)
         scale_param = mx.array([scale_value], dtype=mx.float32)
         inputs = (
-            [q_m, k_m, v_m, stride_param, dilation_param, scale_param]
-            if use_causal_kernel
-            else [q_m, k_m, v_m, stride_param, dilation_param, causal_param, scale_param]
+            [q_m, k_m, v_m, stride_param, dilation_param, causal_param, scale_param]
+            if use_vec4
+            else (
+                [q_m, k_m, v_m, stride_param, dilation_param, scale_param]
+                if use_causal_kernel
+                else [q_m, k_m, v_m, stride_param, dilation_param, causal_param, scale_param]
+            )
         )
         out = kernel(
             inputs=inputs,
@@ -1655,10 +1762,15 @@ def na3d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
 
         def _run_fused():
             use_causal_kernel = (causal_d == 1) or (causal_h == 1) or (causal_w == 1)
+            use_vec4 = _use_vec4_3d_forward(depth, height, width, q.shape[-1])
             kernel = (
-                _get_3d_fused_causal_kernel(ksize, causal_d, causal_h, causal_w)
-                if use_causal_kernel
-                else _get_3d_fused_kernel(ksize)
+                _get_3d_fused_vec4_kernel(ksize)
+                if use_vec4
+                else (
+                    _get_3d_fused_causal_kernel(ksize, causal_d, causal_h, causal_w)
+                    if use_causal_kernel
+                    else _get_3d_fused_kernel(ksize)
+                )
             )
             q_m = _to_metal_3d(_forward_native_input(q))
             k_m = _to_metal_3d(_forward_native_input(k))
@@ -1668,17 +1780,21 @@ def na3d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
             causal_param = mx.array([causal_d, causal_h, causal_w], dtype=mx.int32)
             scale_param = mx.array([scale_value], dtype=mx.float32)
             inputs = (
-                [q_m, k_m, v_m, stride_param, dilation_param, scale_param]
-                if use_causal_kernel
-                else [
-                    q_m,
-                    k_m,
-                    v_m,
-                    stride_param,
-                    dilation_param,
-                    causal_param,
-                    scale_param,
-                ]
+                [q_m, k_m, v_m, stride_param, dilation_param, causal_param, scale_param]
+                if use_vec4
+                else (
+                    [q_m, k_m, v_m, stride_param, dilation_param, scale_param]
+                    if use_causal_kernel
+                    else [
+                        q_m,
+                        k_m,
+                        v_m,
+                        stride_param,
+                        dilation_param,
+                        causal_param,
+                        scale_param,
+                    ]
+                )
             )
             out = kernel(
                 inputs=inputs,
@@ -1763,7 +1879,8 @@ def na1d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
         return pure.na1d_av_forward(attn, v, kernel_size, stride, dilation, is_causal)
 
     def _run():
-        kernel = _get_1d_av_kernel(ksize)
+        use_vec4 = _use_vec4_1d_forward(length, v.shape[-1])
+        kernel = _get_1d_av_vec4_kernel(ksize) if use_vec4 else _get_1d_av_kernel(ksize)
         attn_full = attn
         if step != 1:
             idx = mx.reshape(qpos, (1, expected_out, 1, 1))
@@ -1813,7 +1930,8 @@ def na2d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
     scale_value = (q.shape[-1] ** -0.5) if scale is None else float(scale)
 
     def _run():
-        kernel = _get_2d_qk_kernel(ksize)
+        use_vec4 = _use_vec4_2d_forward(height, width, q.shape[-1])
+        kernel = _get_2d_qk_vec4_kernel(ksize) if use_vec4 else _get_2d_qk_kernel(ksize)
         q_m = _to_metal_2d(_forward_native_input(q))
         k_m = _to_metal_2d(_forward_native_input(k))
         rpb = _zero_rpb_2d(heads, ksize, mx.float32)
@@ -1925,7 +2043,8 @@ def na3d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
     scale_value = (q.shape[-1] ** -0.5) if scale is None else float(scale)
 
     def _run():
-        kernel = _get_3d_qk_kernel(ksize)
+        use_vec4 = _use_vec4_3d_forward(depth, height, width, q.shape[-1])
+        kernel = _get_3d_qk_vec4_kernel(ksize) if use_vec4 else _get_3d_qk_kernel(ksize)
         q_m = _to_metal_3d(_forward_native_input(q))
         k_m = _to_metal_3d(_forward_native_input(k))
         rpb = _zero_rpb_3d(heads, ksize, mx.float32)

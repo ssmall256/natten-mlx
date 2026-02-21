@@ -112,6 +112,8 @@ Observed capabilities:
 24. Replaced 2D/3D split `qk_backward` `grad_k` reverse-search kernels with inverse-map kernels to remove the major hotspot and restore strong split-backward scaling.
 25. Expanded required backward perf guardrail coverage with explicit split `qk_backward` 2D/3D `grad_k` hotspot cases.
 26. Optimized experimental AV-backward fused kernels to use inverse-map `grad_v` accumulation (removing dense reverse-search in fused mode).
+27. Expanded vec4 forward coverage to split `na2d_qk` and split `na3d_qk` Metal kernels (in addition to prior 1D split vec4 paths).
+28. Expanded vec4 forward coverage to fused `na2d` and fused `na3d`, and added split `na1d_av` vec4 kernel path.
 
 ### Deliberately Deferred
 
