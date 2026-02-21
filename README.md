@@ -4,12 +4,11 @@
 
 ## What It Is
 
-- 1D and 2D neighborhood attention functional ops for MLX arrays.
-- 3D neighborhood attention functional ops for MLX arrays.
+- 1D, 2D, and 3D neighborhood attention functional ops for MLX arrays.
 - `mlx.nn.Module` wrappers for `NeighborhoodAttention1D`, `NeighborhoodAttention2D`, and `NeighborhoodAttention3D`.
 - Backend tiers with runtime dispatch:
   - Tier 0: pure MLX (implemented)
-  - Tier 1: fast Metal kernels (fused + split forward paths with pure fallback)
+  - Tier 1: fast Metal kernels (fused + split forward/backward paths with pure fallback)
   - Tier 2: nanobind backend (in-tree implementation with optional external extension override)
 - Compatibility shims for historical NATTEN API eras (`v014`, `v015`, `v017`, `v020`).
 
@@ -65,9 +64,9 @@ Compat shims preserve API names and signatures where possible, but tensor types 
 
 - Parameter validation follows strict NATTEN-style coverage constraints: `dilation * kernel_size <= input_size` per spatial dimension.
 - `attn_drop` is supported in:
-  - Modern modules: `NeighborhoodAttention1D`, `NeighborhoodAttention2D`
+  - Modern modules: `NeighborhoodAttention1D`, `NeighborhoodAttention2D`, `NeighborhoodAttention3D`
   - v0.14 compat modules: `natten_mlx.compat.v014.NeighborhoodAttention1D`, `NeighborhoodAttention2D`
-- When `attn_drop > 0`, modules take the split `qk -> softmax -> dropout -> av` path; otherwise they use fused `na1d` / `na2d`.
+- When `attn_drop > 0`, modules take the split `qk -> softmax -> dropout -> av` path; otherwise they use fused `na1d` / `na2d` / `na3d`.
 - Split `qk/av` kernels in modern modules are stride-aware and causal-aware, so dropout path now supports strided and causal configurations.
 
 ## Upstream Parity
@@ -112,12 +111,12 @@ Median latency table (ms, lower is better):
 
 | Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal speedup vs pure | nanobind speedup vs pure |
 |---|---:|---:|---:|---:|---:|---:|
-| `na1d_k7_s1_d1_noncausal` | `forward` | 0.790 | 0.189 | 0.192 | 4.17x | 4.12x |
-| `na1d_k7_s1_d1_noncausal` | `backward` | 0.602 | 0.571 | 0.547 | 1.06x | 1.10x |
-| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.620 | 0.696 | 0.692 | 2.33x | 2.34x |
-| `na2d_k7x7_s1_d1_noncausal` | `backward` | 1.934 | 1.910 | 1.910 | 1.01x | 1.01x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.859 | 0.304 | 0.318 | 2.83x | 2.70x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.988 | 0.992 | 0.991 | 1.00x | 1.00x |
+| `na1d_k7_s1_d1_noncausal` | `forward` | 0.448 | 0.203 | 0.211 | 2.21x | 2.12x |
+| `na1d_k7_s1_d1_noncausal` | `backward` | 0.512 | 0.543 | 0.519 | 0.94x | 0.99x |
+| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.670 | 0.661 | 0.673 | 2.53x | 2.48x |
+| `na2d_k7x7_s1_d1_noncausal` | `backward` | 1.980 | 1.858 | 1.861 | 1.07x | 1.06x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.856 | 0.309 | 0.298 | 2.77x | 2.87x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.997 | 0.951 | 0.954 | 1.05x | 1.04x |
 
 Raw artifacts are written to:
 - `benchmarks/final-perf.json`
@@ -137,7 +136,7 @@ print(natten_mlx.get_support_matrix())
 
 Current design targets three tiers:
 - Metal kernels (nanobind tier): supported via in-tree nanobind backend implementation, with optional override to an external extension.
-- MLX fast Metal kernels: fused and split forward paths for common configurations, with automatic fallback.
+- MLX fast Metal kernels: fused and split forward/backward paths for covered configurations, with automatic fallback.
 - Pure MLX: full semantic coverage baseline.
 
 Nanobind tier resolution order:
@@ -159,13 +158,9 @@ Backward support across backends uses explicit backend backward entrypoints for 
 ## Limitations
 
 - Fast Metal split acceleration eligibility is strict:
-  - 1D split: odd `K`, `stride>=1`, `dilation>=1`, causal/non-causal supported.
-  - 2D split: square odd `K`, per-axis `stride>=1`, per-axis `dilation>=1`, per-axis causal/non-causal supported.
-  - 3D split: cubic odd `K`, per-axis `stride>=1`, per-axis `dilation>=1`, per-axis causal/non-causal supported.
-- Fast Metal fused acceleration eligibility:
-  - 1D fused: odd `K`, `stride>=1`, `dilation>=1`, causal/non-causal supported.
-  - 2D fused: square odd `K`, per-axis `stride>=1`, per-axis `dilation>=1`, per-axis causal/non-causal supported.
-  - 3D fused: cubic odd `K`, per-axis `stride>=1`, per-axis `dilation>=1`, per-axis causal/non-causal supported.
+  - `stride>=1` and `dilation>=1` on each active spatial axis, with causal and non-causal supported.
+  - Kernel shape must match operator dimensionality: odd `K` (1D), square odd `(K, K)` (2D), cubic odd `(K, K, K)` (3D).
+- Fast Metal fused acceleration eligibility follows the same per-axis stride/dilation and causal rules, with the same odd/square/cubic kernel-shape requirement by dimensionality.
 - Unsupported accelerated configurations fall back to pure backend for correctness.
 - Nanobind tier delegates to fast-metal where available (same exact eligibility constraints), otherwise pure fallback.
 - MLX lazy evaluation applies; this package does not force evaluation.
