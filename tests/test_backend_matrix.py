@@ -70,6 +70,78 @@ def test_backend_forced_matches_pure_stride_causal(backend: str):
 
 
 @pytest.mark.parametrize("backend", ["pure", "fast_metal", "nanobind"])
+def test_backend_forced_matches_pure_expanded_fused_na1d(backend: str):
+    q = mx.random.normal((1, 25, 2, 4))
+    k = mx.random.normal((1, 25, 2, 4))
+    v = mx.random.normal((1, 25, 2, 4))
+
+    out_pure = _run_backend(
+        "pure",
+        lambda: na1d(
+            q,
+            k,
+            v,
+            kernel_size=9,
+            stride=2,
+            dilation=2,
+            is_causal=True,
+            scale=0.29,
+        ),
+    )
+    out_backend = _run_backend(
+        backend,
+        lambda: na1d(
+            q,
+            k,
+            v,
+            kernel_size=9,
+            stride=2,
+            dilation=2,
+            is_causal=True,
+            scale=0.29,
+        ),
+    )
+    mx.eval(out_pure, out_backend)
+    np.testing.assert_allclose(np.array(out_backend), np.array(out_pure), rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("backend", ["pure", "fast_metal", "nanobind"])
+def test_backend_forced_matches_pure_expanded_fused_na2d(backend: str):
+    q = mx.random.normal((1, 19, 17, 2, 3))
+    k = mx.random.normal((1, 19, 17, 2, 3))
+    v = mx.random.normal((1, 19, 17, 2, 3))
+
+    out_pure = _run_backend(
+        "pure",
+        lambda: na2d(
+            q,
+            k,
+            v,
+            kernel_size=(9, 9),
+            stride=(2, 3),
+            dilation=(2, 1),
+            is_causal=(True, False),
+            scale=0.33,
+        ),
+    )
+    out_backend = _run_backend(
+        backend,
+        lambda: na2d(
+            q,
+            k,
+            v,
+            kernel_size=(9, 9),
+            stride=(2, 3),
+            dilation=(2, 1),
+            is_causal=(True, False),
+            scale=0.33,
+        ),
+    )
+    mx.eval(out_pure, out_backend)
+    np.testing.assert_allclose(np.array(out_backend), np.array(out_pure), rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("backend", ["pure", "fast_metal", "nanobind"])
 def test_backend_forced_attn_drop_causal_stride_smoke(backend: str):
     x1 = mx.random.normal((2, 11, 16))
     x2 = mx.random.normal((2, 7, 5, 12))

@@ -16,7 +16,7 @@ from ._metal_sources import (
     source_2d_qk,
 )
 
-_SUPPORTED_KERNELS = {3, 5, 7}
+_SPLIT_SUPPORTED_KERNELS = {3, 5, 7}
 _KERNEL_BUILD_FAILED = False
 _QK_1D_KERNELS: dict[int, Callable] = {}
 _AV_1D_KERNELS: dict[int, Callable] = {}
@@ -34,6 +34,10 @@ def is_available() -> bool:
         and hasattr(mx, "fast")
         and hasattr(mx.fast, "metal_kernel")
     )
+
+
+def _ceil_div(a: int, b: int) -> int:
+    return (a + b - 1) // b
 
 
 def _threadgroup_1d(length: int) -> tuple[int, int, int]:
@@ -132,7 +136,15 @@ def _get_1d_fused_kernel(kernel_size: int):
     if kernel_size not in _FUSED_1D_KERNELS:
         _FUSED_1D_KERNELS[kernel_size] = mx.fast.metal_kernel(
             name=f"natten_mlx_na1d_fused_k{kernel_size}",
-            input_names=["query", "key", "value", "dilation_param", "scale_param"],
+            input_names=[
+                "query",
+                "key",
+                "value",
+                "stride_param",
+                "dilation_param",
+                "causal_param",
+                "scale_param",
+            ],
             output_names=["out"],
             source=source_1d_fused(kernel_size),
             ensure_row_contiguous=True,
@@ -144,7 +156,15 @@ def _get_2d_fused_kernel(kernel_size: int):
     if kernel_size not in _FUSED_2D_KERNELS:
         _FUSED_2D_KERNELS[kernel_size] = mx.fast.metal_kernel(
             name=f"natten_mlx_na2d_fused_k{kernel_size}",
-            input_names=["query", "key", "value", "dilation_param", "scale_param"],
+            input_names=[
+                "query",
+                "key",
+                "value",
+                "stride_param",
+                "dilation_param",
+                "causal_param",
+                "scale_param",
+            ],
             output_names=["out"],
             source=source_2d_fused(kernel_size),
             ensure_row_contiguous=True,
@@ -152,23 +172,46 @@ def _get_2d_fused_kernel(kernel_size: int):
     return _FUSED_2D_KERNELS[kernel_size]
 
 
-def _supports_1d(kernel_size, stride, is_causal) -> bool:
+def _is_valid_kernel_size(kernel_size: int) -> bool:
+    return kernel_size > 0 and (kernel_size % 2 == 1)
+
+
+def _supports_1d_split(kernel_size, stride, is_causal) -> bool:
     return (
-        int(kernel_size[0]) in _SUPPORTED_KERNELS
+        int(kernel_size[0]) in _SPLIT_SUPPORTED_KERNELS
         and int(stride[0]) == 1
         and not bool(is_causal[0])
     )
 
 
-def _supports_2d(kernel_size, stride, dilation, is_causal) -> bool:
+def _supports_2d_split(kernel_size, stride, dilation, is_causal) -> bool:
     return (
         int(kernel_size[0]) == int(kernel_size[1])
-        and int(kernel_size[0]) in _SUPPORTED_KERNELS
+        and int(kernel_size[0]) in _SPLIT_SUPPORTED_KERNELS
         and int(stride[0]) == 1
         and int(stride[1]) == 1
         and int(dilation[0]) == int(dilation[1])
         and not bool(is_causal[0])
         and not bool(is_causal[1])
+    )
+
+
+def _supports_1d_fused(kernel_size, stride, dilation) -> bool:
+    return (
+        _is_valid_kernel_size(int(kernel_size[0]))
+        and int(stride[0]) >= 1
+        and int(dilation[0]) >= 1
+    )
+
+
+def _supports_2d_fused(kernel_size, stride, dilation) -> bool:
+    return (
+        int(kernel_size[0]) == int(kernel_size[1])
+        and _is_valid_kernel_size(int(kernel_size[0]))
+        and int(stride[0]) >= 1
+        and int(stride[1]) >= 1
+        and int(dilation[0]) >= 1
+        and int(dilation[1]) >= 1
     )
 
 
@@ -189,11 +232,14 @@ def _with_grad_fallback(fn, fallback):
 
 
 def na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
-    if not is_available() or not _supports_1d(kernel_size, stride, is_causal):
+    if not is_available() or not _supports_1d_fused(kernel_size, stride, dilation):
         return pure.na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
     batch, length, heads, _ = q.shape
     ksize = int(kernel_size[0])
+    step = int(stride[0])
     dil = int(dilation[0])
+    causal = 1 if bool(is_causal[0]) else 0
+    out_length = _ceil_div(length, step)
     scale_value = (q.shape[-1] ** -0.5) if scale is None else float(scale)
 
     def _run():
@@ -201,13 +247,15 @@ def na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
         q_m = _to_metal_1d(mx.astype(q, mx.float32))
         k_m = _to_metal_1d(mx.astype(k, mx.float32))
         v_m = _to_metal_1d(mx.astype(v, mx.float32))
+        stride_param = mx.array([step], dtype=mx.int32)
         dilation_param = mx.array([dil], dtype=mx.int32)
+        causal_param = mx.array([causal], dtype=mx.int32)
         scale_param = mx.array([scale_value], dtype=mx.float32)
         out = kernel(
-            inputs=[q_m, k_m, v_m, dilation_param, scale_param],
-            grid=(length, 1, batch * heads),
-            threadgroup=_threadgroup_1d(length),
-            output_shapes=[(batch, heads, length, q.shape[-1])],
+            inputs=[q_m, k_m, v_m, stride_param, dilation_param, causal_param, scale_param],
+            grid=(out_length, 1, batch * heads),
+            threadgroup=_threadgroup_1d(out_length),
+            output_shapes=[(batch, heads, out_length, q.shape[-1])],
             output_dtypes=[mx.float32],
         )[0]
         return mx.astype(_from_metal_1d(out), q.dtype)
@@ -219,11 +267,18 @@ def na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
 
 
 def na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
-    if not is_available() or not _supports_2d(kernel_size, stride, dilation, is_causal):
+    if not is_available() or not _supports_2d_fused(kernel_size, stride, dilation):
         return pure.na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
     batch, height, width, heads, _ = q.shape
     ksize = int(kernel_size[0])
-    dil = int(dilation[0])
+    stride_h = int(stride[0])
+    stride_w = int(stride[1])
+    out_height = _ceil_div(height, stride_h)
+    out_width = _ceil_div(width, stride_w)
+    dil_h = int(dilation[0])
+    dil_w = int(dilation[1])
+    causal_h = 1 if bool(is_causal[0]) else 0
+    causal_w = 1 if bool(is_causal[1]) else 0
     scale_value = (q.shape[-1] ** -0.5) if scale is None else float(scale)
 
     def _run():
@@ -231,13 +286,15 @@ def na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
         q_m = _to_metal_2d(mx.astype(q, mx.float32))
         k_m = _to_metal_2d(mx.astype(k, mx.float32))
         v_m = _to_metal_2d(mx.astype(v, mx.float32))
-        dilation_param = mx.array([dil], dtype=mx.int32)
+        stride_param = mx.array([stride_h, stride_w], dtype=mx.int32)
+        dilation_param = mx.array([dil_h, dil_w], dtype=mx.int32)
+        causal_param = mx.array([causal_h, causal_w], dtype=mx.int32)
         scale_param = mx.array([scale_value], dtype=mx.float32)
         out = kernel(
-            inputs=[q_m, k_m, v_m, dilation_param, scale_param],
-            grid=(width, height, batch * heads),
-            threadgroup=_threadgroup_2d(height, width),
-            output_shapes=[(batch, heads, height, width, q.shape[-1])],
+            inputs=[q_m, k_m, v_m, stride_param, dilation_param, causal_param, scale_param],
+            grid=(out_width, out_height, batch * heads),
+            threadgroup=_threadgroup_2d(out_height, out_width),
+            output_shapes=[(batch, heads, out_height, out_width, q.shape[-1])],
             output_dtypes=[mx.float32],
         )[0]
         return mx.astype(_from_metal_2d(out), q.dtype)
@@ -249,7 +306,7 @@ def na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
 
 
 def na1d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
-    if not is_available() or not _supports_1d(kernel_size, stride, is_causal):
+    if not is_available() or not _supports_1d_split(kernel_size, stride, is_causal):
         return pure.na1d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale)
 
     batch, length, heads, _ = q.shape
@@ -280,7 +337,7 @@ def na1d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
 
 
 def na1d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
-    if not is_available() or not _supports_1d(kernel_size, stride, is_causal):
+    if not is_available() or not _supports_1d_split(kernel_size, stride, is_causal):
         return pure.na1d_av_forward(attn, v, kernel_size, stride, dilation, is_causal)
 
     batch, length, heads, ksize = attn.shape
@@ -310,7 +367,7 @@ def na1d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
 
 
 def na2d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
-    if not is_available() or not _supports_2d(kernel_size, stride, dilation, is_causal):
+    if not is_available() or not _supports_2d_split(kernel_size, stride, dilation, is_causal):
         return pure.na2d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale)
 
     batch, height, width, heads, _ = q.shape
@@ -342,7 +399,7 @@ def na2d_qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale):
 
 
 def na2d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
-    if not is_available() or not _supports_2d(kernel_size, stride, dilation, is_causal):
+    if not is_available() or not _supports_2d_split(kernel_size, stride, dilation, is_causal):
         return pure.na2d_av_forward(attn, v, kernel_size, stride, dilation, is_causal)
 
     batch, height, width, heads, area = attn.shape
@@ -373,7 +430,7 @@ def na2d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
 
 
 def na1d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale):
-    if not is_available() or not _supports_1d(kernel_size, stride, is_causal):
+    if not is_available() or not _supports_1d_fused(kernel_size, stride, dilation):
         return pure.na1d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale)
 
     def _run():
@@ -398,7 +455,7 @@ def na1d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, s
 
 
 def na2d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale):
-    if not is_available() or not _supports_2d(kernel_size, stride, dilation, is_causal):
+    if not is_available() or not _supports_2d_fused(kernel_size, stride, dilation):
         return pure.na2d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale)
 
     def _run():
@@ -423,7 +480,7 @@ def na2d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, s
 
 
 def na1d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale):
-    if not is_available() or not _supports_1d(kernel_size, stride, is_causal):
+    if not is_available() or not _supports_1d_split(kernel_size, stride, is_causal):
         return pure.na1d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale)
 
     def _run():
@@ -444,7 +501,7 @@ def na1d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
 
 
 def na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal):
-    if not is_available() or not _supports_1d(kernel_size, stride, is_causal):
+    if not is_available() or not _supports_1d_split(kernel_size, stride, is_causal):
         return pure.na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal)
 
     def _run():
@@ -465,7 +522,7 @@ def na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
 
 
 def na2d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale):
-    if not is_available() or not _supports_2d(kernel_size, stride, dilation, is_causal):
+    if not is_available() or not _supports_2d_split(kernel_size, stride, dilation, is_causal):
         return pure.na2d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, scale)
 
     def _run():
@@ -486,7 +543,7 @@ def na2d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
 
 
 def na2d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal):
-    if not is_available() or not _supports_2d(kernel_size, stride, dilation, is_causal):
+    if not is_available() or not _supports_2d_split(kernel_size, stride, dilation, is_causal):
         return pure.na2d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal)
 
     def _run():
