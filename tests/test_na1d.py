@@ -17,3 +17,10 @@ def test_neighborhood_attention_1d_module_stride_downsamples():
     x = mx.random.normal((2, 11, 16))
     y = layer(x)
     assert y.shape == (2, 6, 16)
+
+
+def test_neighborhood_attention_1d_module_with_attn_drop():
+    layer = NeighborhoodAttention1D(embed_dim=16, num_heads=4, kernel_size=3, attn_drop=0.1)
+    x = mx.random.normal((2, 10, 16))
+    y = layer(x)
+    assert y.shape == (2, 10, 16)

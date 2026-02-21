@@ -77,6 +77,7 @@ class NeighborhoodAttention1D(nn.Module):
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.proj = nn.Linear(dim, dim)
         self.attn_drop_rate = float(attn_drop)
+        self.attn_drop = nn.Dropout(self.attn_drop_rate) if self.attn_drop_rate > 0.0 else None
         self.proj_drop_rate = float(proj_drop)
         self.proj_drop = nn.Dropout(self.proj_drop_rate) if self.proj_drop_rate > 0.0 else None
 
@@ -91,16 +92,26 @@ class NeighborhoodAttention1D(nn.Module):
         k = k.squeeze(2)
         v = v.squeeze(2)
 
-        out = na1d(
-            q,
-            k,
-            v,
-            kernel_size=self.kernel_size,
-            stride=(1,),
-            dilation=self.dilation,
-            is_causal=(False,),
-            scale=self.scale,
-        )
+        if self.attn_drop_rate > 0.0:
+            logits = na1d_qk(q, k, kernel_size=self.kernel_size, dilation=self.dilation)
+            default_scale = self.head_dim ** -0.5
+            if self.scale != default_scale:
+                logits = logits * (self.scale / default_scale)
+            attn = mx.softmax(logits, axis=-1)
+            if self.attn_drop is not None:
+                attn = self.attn_drop(attn)
+            out = na1d_av(attn, v, kernel_size=self.kernel_size, dilation=self.dilation)
+        else:
+            out = na1d(
+                q,
+                k,
+                v,
+                kernel_size=self.kernel_size,
+                stride=(1,),
+                dilation=self.dilation,
+                is_causal=(False,),
+                scale=self.scale,
+            )
         out = out.reshape(batch, out.shape[1], channels)
         out = self.proj(out)
         if self.proj_drop is not None:
@@ -136,6 +147,7 @@ class NeighborhoodAttention2D(nn.Module):
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.proj = nn.Linear(dim, dim)
         self.attn_drop_rate = float(attn_drop)
+        self.attn_drop = nn.Dropout(self.attn_drop_rate) if self.attn_drop_rate > 0.0 else None
         self.proj_drop_rate = float(proj_drop)
         self.proj_drop = nn.Dropout(self.proj_drop_rate) if self.proj_drop_rate > 0.0 else None
 
@@ -150,16 +162,26 @@ class NeighborhoodAttention2D(nn.Module):
         k = k.squeeze(3)
         v = v.squeeze(3)
 
-        out = na2d(
-            q,
-            k,
-            v,
-            kernel_size=self.kernel_size,
-            stride=(1, 1),
-            dilation=self.dilation,
-            is_causal=(False, False),
-            scale=self.scale,
-        )
+        if self.attn_drop_rate > 0.0:
+            logits = na2d_qk(q, k, kernel_size=self.kernel_size, dilation=self.dilation)
+            default_scale = self.head_dim ** -0.5
+            if self.scale != default_scale:
+                logits = logits * (self.scale / default_scale)
+            attn = mx.softmax(logits, axis=-1)
+            if self.attn_drop is not None:
+                attn = self.attn_drop(attn)
+            out = na2d_av(attn, v, kernel_size=self.kernel_size, dilation=self.dilation)
+        else:
+            out = na2d(
+                q,
+                k,
+                v,
+                kernel_size=self.kernel_size,
+                stride=(1, 1),
+                dilation=self.dilation,
+                is_causal=(False, False),
+                scale=self.scale,
+            )
         out = out.reshape(batch, out.shape[1], out.shape[2], channels)
         out = self.proj(out)
         if self.proj_drop is not None:

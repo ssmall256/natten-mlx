@@ -220,7 +220,8 @@ def na1d_qk_forward(q, k, kernel_size, dilation):
     k_neighbors = mx.reshape(k_neighbors, (batch, seqlen, ksize, heads, head_dim))
     k_neighbors = mx.transpose(k_neighbors, axes=(0, 1, 3, 2, 4))
 
-    logits = mx.sum(q[..., None, :] * k_neighbors, axis=-1)
+    scale = head_dim ** -0.5
+    logits = mx.sum(q[..., None, :] * k_neighbors, axis=-1) * float(scale)
     return logits
 
 
@@ -274,7 +275,8 @@ def na2d_qk_forward(q, k, kernel_size, dilation):
     )
     k_neighbors = mx.transpose(k_neighbors, axes=(0, 1, 2, 4, 3, 5))
 
-    logits = mx.sum(q[..., None, :] * k_neighbors, axis=-1)
+    scale = head_dim ** -0.5
+    logits = mx.sum(q[..., None, :] * k_neighbors, axis=-1) * float(scale)
     return logits
 
 
