@@ -165,14 +165,17 @@ def _threadgroup_1d_qk_bwd_k_inverse(dim: int, length: int) -> tuple[int, int, i
 
 
 def _threadgroup_1d_qk_bwd_q_vec4(dim4: int, length: int) -> tuple[int, int, int]:
+    # Long-sequence 1D grad_q vec4 tends to benefit from wider y-groups.
+    if dim4 >= 16 and length >= 1024:
+        return (16, 16, 1)
     return _threadgroup_grad_v_1d_vec4(dim4, length)
 
 
 def _use_vec4_1d_qk_grad_q(length: int, head_dim: int) -> bool:
     if head_dim % 4 != 0 or head_dim < 16:
         return False
-    # On very short sequences, scalar grad_q is often equivalent or better.
-    return length > 64
+    # Vec4 grad_q is a net win across short and long decode-like lengths.
+    return length > 0
 
 
 def _use_vec4_1d_grad_v(length: int, head_dim: int) -> bool:

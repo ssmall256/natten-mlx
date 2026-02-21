@@ -329,3 +329,13 @@ def test_inverse_map_upcasts_grad_index_dtype_on_overflow():
     )
     assert inv_attn_base.dtype == mx.uint16
     assert inv_grad_base.dtype == mx.int32
+
+
+def test_grad_q_vec4_heuristic_supports_short_decode_lengths():
+    assert fast_metal._use_vec4_1d_qk_grad_q(length=32, head_dim=16)
+    assert fast_metal._use_vec4_1d_qk_grad_q(length=64, head_dim=32)
+    assert not fast_metal._use_vec4_1d_qk_grad_q(length=64, head_dim=12)
+
+
+def test_grad_q_vec4_threadgroup_long_mode():
+    assert fast_metal._threadgroup_1d_qk_bwd_q_vec4(dim4=16, length=1024) == (16, 16, 1)
