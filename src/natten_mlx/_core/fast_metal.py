@@ -90,6 +90,17 @@ def _threadgroup_2d(height: int, width: int) -> tuple[int, int, int]:
     return (min(max(width, 1), 16), min(max(height, 1), 8), 1)
 
 
+def _threadgroup_1d_heavy(length: int) -> tuple[int, int, int]:
+    # Backward kernels are register-heavy; smaller groups generally reduce
+    # register pressure and improve occupancy.
+    return (min(max(length, 1), 64), 1, 1)
+
+
+def _threadgroup_2d_heavy(height: int, width: int) -> tuple[int, int, int]:
+    # Keep backward kernels on 8x8 groups for better occupancy on heavy loops.
+    return (min(max(width, 1), 8), min(max(height, 1), 8), 1)
+
+
 def _to_metal_1d(x: mx.array) -> mx.array:
     # Kernels expect [B, heads, L, D].
     return mx.transpose(x, axes=(0, 2, 1, 3))
@@ -1140,7 +1151,7 @@ def na1d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
         grad_q_m = grad_q_kernel(
             inputs=[grad_attn_m, k_m, stride_param, dilation_param, causal_param, scale_param],
             grid=(length, 1, batch * heads),
-            threadgroup=_threadgroup_1d(length),
+            threadgroup=_threadgroup_1d_heavy(length),
             output_shapes=[(batch, heads, length, head_dim)],
             output_dtypes=[mx.float32],
         )[0]
@@ -1148,7 +1159,7 @@ def na1d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
         grad_k_m = grad_k_kernel(
             inputs=[grad_attn_m, q_m, stride_param, dilation_param, causal_param, scale_param],
             grid=(length, 1, batch * heads),
-            threadgroup=_threadgroup_1d(length),
+            threadgroup=_threadgroup_1d_heavy(length),
             output_shapes=[(batch, heads, length, head_dim)],
             output_dtypes=[mx.float32],
         )[0]
@@ -1192,7 +1203,7 @@ def na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
                 causal_param,
             ],
             grid=(out_len, 1, batch * heads),
-            threadgroup=_threadgroup_1d(out_len),
+            threadgroup=_threadgroup_1d_heavy(out_len),
             output_shapes=[(batch, heads, out_len, ksize)],
             output_dtypes=[mx.float32],
         )[0]
@@ -1208,7 +1219,7 @@ def na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
                 causal_param,
             ],
             grid=(length, 1, batch * heads),
-            threadgroup=_threadgroup_1d(length),
+            threadgroup=_threadgroup_1d_heavy(length),
             output_shapes=[(batch, heads, length, head_dim)],
             output_dtypes=[mx.float32],
         )[0]
@@ -1253,7 +1264,7 @@ def na2d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
         grad_q_m = grad_q_kernel(
             inputs=[grad_attn_m, k_m, stride_param, dilation_param, causal_param, scale_param],
             grid=(width, height, batch * heads),
-            threadgroup=_threadgroup_2d(height, width),
+            threadgroup=_threadgroup_2d_heavy(height, width),
             output_shapes=[(batch, heads, height, width, head_dim)],
             output_dtypes=[mx.float32],
         )[0]
@@ -1261,7 +1272,7 @@ def na2d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
         grad_k_m = grad_k_kernel(
             inputs=[grad_attn_m, q_m, stride_param, dilation_param, causal_param, scale_param],
             grid=(width, height, batch * heads),
-            threadgroup=_threadgroup_2d(height, width),
+            threadgroup=_threadgroup_2d_heavy(height, width),
             output_shapes=[(batch, heads, height, width, head_dim)],
             output_dtypes=[mx.float32],
         )[0]
@@ -1309,7 +1320,7 @@ def na2d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
                 causal_param,
             ],
             grid=(out_w, out_h, batch * heads),
-            threadgroup=_threadgroup_2d(out_h, out_w),
+            threadgroup=_threadgroup_2d_heavy(out_h, out_w),
             output_shapes=[(batch, heads, out_h, out_w, area)],
             output_dtypes=[mx.float32],
         )[0]
@@ -1325,7 +1336,7 @@ def na2d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
                 causal_param,
             ],
             grid=(width, height, batch * heads),
-            threadgroup=_threadgroup_2d(height, width),
+            threadgroup=_threadgroup_2d_heavy(height, width),
             output_shapes=[(batch, heads, height, width, head_dim)],
             output_dtypes=[mx.float32],
         )[0]
@@ -1382,7 +1393,7 @@ def na3d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
         grad_q_m = grad_q_kernel(
             inputs=[grad_attn_m, k_m, stride_param, dilation_param, causal_param, scale_param],
             grid=(width, height, batch * heads * depth),
-            threadgroup=_threadgroup_2d(height, width),
+            threadgroup=_threadgroup_2d_heavy(height, width),
             output_shapes=[(batch, heads, depth, height, width, head_dim)],
             output_dtypes=[mx.float32],
         )[0]
@@ -1390,7 +1401,7 @@ def na3d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
         grad_k_m = grad_k_kernel(
             inputs=[grad_attn_m, q_m, stride_param, dilation_param, causal_param, scale_param],
             grid=(width, height, batch * heads * depth),
-            threadgroup=_threadgroup_2d(height, width),
+            threadgroup=_threadgroup_2d_heavy(height, width),
             output_shapes=[(batch, heads, depth, height, width, head_dim)],
             output_dtypes=[mx.float32],
         )[0]
@@ -1451,7 +1462,7 @@ def na3d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
                 causal_param,
             ],
             grid=(out_w, out_h, batch * heads * out_d),
-            threadgroup=_threadgroup_2d(out_h, out_w),
+            threadgroup=_threadgroup_2d_heavy(out_h, out_w),
             output_shapes=[(batch, heads, out_d, out_h, out_w, volume)],
             output_dtypes=[mx.float32],
         )[0]
@@ -1467,7 +1478,7 @@ def na3d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
                 causal_param,
             ],
             grid=(width, height, batch * heads * depth),
-            threadgroup=_threadgroup_2d(height, width),
+            threadgroup=_threadgroup_2d_heavy(height, width),
             output_shapes=[(batch, heads, depth, height, width, head_dim)],
             output_dtypes=[mx.float32],
         )[0]

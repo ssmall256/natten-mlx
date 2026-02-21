@@ -98,11 +98,43 @@ jobs:
           tests/test_backend_matrix.py
           tests/test_backward_parity.py
 
+  upstream-parity-required:
+    name: Upstream Parity (Required)
+    runs-on: macos-14
+    timeout-minutes: 35
+    env:
+      UV_CACHE_DIR: /tmp/.uv-cache
+      NATTEN_UPSTREAM_PARITY: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install project dependencies
+        run: uv sync --extra dev
+
+      - name: Install upstream parity dependencies
+        run: |
+          uv pip install setuptools wheel
+          uv pip install numpy "torch==2.3.1"
+          uv pip install --no-build-isolation "natten==0.14.6"
+
+      - name: Run upstream parity tests
+        run: uv run python -m pytest tests/test_upstream_parity.py -q
+
   backend-benchmark-smoke:
     name: Backend Benchmark Smoke
     needs:
       - backend-tests
       - nanobind-compiled-tests
+      - upstream-parity-required
     runs-on: macos-14
     timeout-minutes: 20
     env:
