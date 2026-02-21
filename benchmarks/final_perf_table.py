@@ -71,93 +71,113 @@ def _build_cases():
     k3 = mx.random.normal((1, 10, 12, 14, 4, 16))
     v3 = mx.random.normal((1, 10, 12, 14, 4, 16))
 
-    def _bw_1d():
-        def loss_fn(q_in):
-            return mx.sum(
-                na1d(
-                    q_in,
-                    k1,
-                    v1,
-                    kernel_size=7,
-                    stride=1,
-                    dilation=1,
-                    is_causal=False,
-                    scale=0.5,
-                )
+    def _make_1d_case(name: str, *, causal: bool) -> dict:
+        def _forward():
+            return na1d(
+                q1,
+                k1,
+                v1,
+                kernel_size=7,
+                stride=1,
+                dilation=1,
+                is_causal=causal,
+                scale=0.5,
             )
 
-        return mx.grad(loss_fn)(q1)
-
-    def _bw_2d():
-        def loss_fn(q_in):
-            return mx.sum(
-                na2d(
-                    q_in,
-                    k2,
-                    v2,
-                    kernel_size=(7, 7),
-                    stride=(1, 1),
-                    dilation=(1, 1),
-                    is_causal=(False, False),
-                    scale=0.5,
+        def _backward():
+            def loss_fn(q_in):
+                return mx.sum(
+                    na1d(
+                        q_in,
+                        k1,
+                        v1,
+                        kernel_size=7,
+                        stride=1,
+                        dilation=1,
+                        is_causal=causal,
+                        scale=0.5,
+                    )
                 )
-            )
 
-        return mx.grad(loss_fn)(q2)
+            return mx.grad(loss_fn)(q1)
 
-    def _bw_3d():
-        def loss_fn(q_in):
-            return mx.sum(
-                na3d(
-                    q_in,
-                    k3,
-                    v3,
-                    kernel_size=(3, 3, 3),
-                    stride=(1, 1, 1),
-                    dilation=(1, 1, 1),
-                    is_causal=(False, False, False),
-                    scale=0.5,
-                )
-            )
+        return {"name": name, "forward": _forward, "backward": _backward}
 
-        return mx.grad(loss_fn)(q3)
+    def _make_2d_case(name: str, *, causal_h: bool, causal_w: bool) -> dict:
+        causal = (causal_h, causal_w)
 
-    return [
-        {
-            "name": "na1d_k7_s1_d1_noncausal",
-            "forward": lambda: na1d(
-                q1, k1, v1, kernel_size=7, stride=1, dilation=1, is_causal=False, scale=0.5
-            ),
-            "backward": _bw_1d,
-        },
-        {
-            "name": "na2d_k7x7_s1_d1_noncausal",
-            "forward": lambda: na2d(
+        def _forward():
+            return na2d(
                 q2,
                 k2,
                 v2,
                 kernel_size=(7, 7),
                 stride=(1, 1),
                 dilation=(1, 1),
-                is_causal=(False, False),
+                is_causal=causal,
                 scale=0.5,
-            ),
-            "backward": _bw_2d,
-        },
-        {
-            "name": "na3d_k3x3x3_s1_d1_noncausal",
-            "forward": lambda: na3d(
+            )
+
+        def _backward():
+            def loss_fn(q_in):
+                return mx.sum(
+                    na2d(
+                        q_in,
+                        k2,
+                        v2,
+                        kernel_size=(7, 7),
+                        stride=(1, 1),
+                        dilation=(1, 1),
+                        is_causal=causal,
+                        scale=0.5,
+                    )
+                )
+
+            return mx.grad(loss_fn)(q2)
+
+        return {"name": name, "forward": _forward, "backward": _backward}
+
+    def _make_3d_case(name: str, *, causal_d: bool, causal_h: bool, causal_w: bool) -> dict:
+        causal = (causal_d, causal_h, causal_w)
+
+        def _forward():
+            return na3d(
                 q3,
                 k3,
                 v3,
                 kernel_size=(3, 3, 3),
                 stride=(1, 1, 1),
                 dilation=(1, 1, 1),
-                is_causal=(False, False, False),
+                is_causal=causal,
                 scale=0.5,
-            ),
-            "backward": _bw_3d,
-        },
+            )
+
+        def _backward():
+            def loss_fn(q_in):
+                return mx.sum(
+                    na3d(
+                        q_in,
+                        k3,
+                        v3,
+                        kernel_size=(3, 3, 3),
+                        stride=(1, 1, 1),
+                        dilation=(1, 1, 1),
+                        is_causal=causal,
+                        scale=0.5,
+                    )
+                )
+
+            return mx.grad(loss_fn)(q3)
+
+        return {"name": name, "forward": _forward, "backward": _backward}
+
+    return [
+        _make_1d_case("na1d_k7_s1_d1_noncausal", causal=False),
+        _make_1d_case("na1d_k7_s1_d1_causal", causal=True),
+        _make_2d_case("na2d_k7x7_s1_d1_noncausal", causal_h=False, causal_w=False),
+        _make_2d_case("na2d_k7x7_s1_d1_causal_h", causal_h=True, causal_w=False),
+        _make_3d_case("na3d_k3x3x3_s1_d1_noncausal", causal_d=False, causal_h=False, causal_w=False),
+        _make_3d_case("na3d_k3x3x3_s1_d1_causal_d", causal_d=True, causal_h=False, causal_w=False),
     ]
 
 
