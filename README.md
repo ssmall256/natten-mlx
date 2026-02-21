@@ -8,8 +8,8 @@
 - `mlx.nn.Module` wrappers for `NeighborhoodAttention1D` and `NeighborhoodAttention2D`.
 - Backend tiers with runtime dispatch:
   - Tier 0: pure MLX (implemented)
-  - Tier 1: fast Metal kernels (stub)
-  - Tier 2: nanobind/pure-Metal extension (stub)
+  - Tier 1: fast Metal kernels (implemented for common split/fused paths, with pure fallback)
+  - Tier 2: nanobind/pure-Metal extension adapter (loads optional extension when installed, otherwise falls back)
 - Compatibility shims for historical NATTEN API eras (`v014`, `v015`, `v017`, `v020`).
 
 ## Installation
@@ -76,7 +76,7 @@ NATTEN_UPSTREAM_PARITY=1 uv run python -m pytest tests/test_upstream_parity.py -
 ## Limitations
 
 - No 3D neighborhood attention yet.
-- Fast Metal and nanobind backends are scaffolded stubs.
+- Fast Metal acceleration currently targets non-causal, stride-1, square K in `{3,5,7}`; other configurations use pure backend for correctness.
 - MLX lazy evaluation applies; this package does not force evaluation.
 
 ## License
