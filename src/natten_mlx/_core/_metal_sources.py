@@ -941,6 +941,76 @@ for (int d = 0; d < dim; d++) {{
 """
 
 
+def source_1d_qk_backward_q_vec4(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = key_shape[0];
+const int heads = key_shape[1];
+const int length = key_shape[2];
+const int dim = key_shape[3];
+const int out_length = grad_attn_shape[2];
+const int stride = (int)stride_param[0];
+const int dilation = (int)dilation_param[0];
+const bool causal = ((int)causal_param[0]) != 0;
+const float scale = scale_param[0];
+const int K = {kernel_size};
+const int NH = {nh};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int d4 = gid.x;
+int i = gid.y;
+if (b >= batch_size || h >= heads || i >= length) return;
+
+int d0 = d4 * 4;
+if (d0 + 3 >= dim) return;
+
+bool query_valid = (i % stride) == 0;
+int out_i = i / stride;
+if (!query_valid || out_i < 0 || out_i >= out_length) {{
+    int out_base = (((b * heads + h) * length + i) * dim + d0);
+    out[out_base] = 0.0f;
+    out[out_base + 1] = 0.0f;
+    out[out_base + 2] = 0.0f;
+    out[out_base + 3] = 0.0f;
+    return;
+}}
+
+int ni = 0;
+int ei = length;
+if (!causal) {{
+    NATTEN_GET_WINDOW_START(ni, i, length, K, NH, dilation);
+    NATTEN_GET_WINDOW_END(ei, ni, length, K, dilation);
+}}
+
+float acc0 = 0.0f;
+float acc1 = 0.0f;
+float acc2 = 0.0f;
+float acc3 = 0.0f;
+for (int ki = 0; ki < K; ki++) {{
+    int key_i = (causal ? (i - (K - 1) * dilation) : ni) + ki * dilation;
+    bool valid = causal
+        ? (key_i >= 0 && key_i <= i && key_i < length)
+        : (key_i >= 0 && key_i < ei);
+    if (valid) {{
+        int g_idx = (((b * heads + h) * out_length + out_i) * K + ki);
+        float g = grad_attn[g_idx] * scale;
+        int k_base = (((b * heads + h) * length + key_i) * dim + d0);
+        acc0 += g * key[k_base];
+        acc1 += g * key[k_base + 1];
+        acc2 += g * key[k_base + 2];
+        acc3 += g * key[k_base + 3];
+    }}
+}}
+int out_base = (((b * heads + h) * length + i) * dim + d0);
+out[out_base] = acc0;
+out[out_base + 1] = acc1;
+out[out_base + 2] = acc2;
+out[out_base + 3] = acc3;
+"""
+
+
 def source_1d_av_backward_v(kernel_size: int) -> str:
     return _HELPERS + f"""
 uint3 gid = thread_position_in_grid;

@@ -18,6 +18,7 @@ from ._metal_sources import (
     source_1d_fused,
     source_1d_qk,
     source_1d_qk_backward_q,
+    source_1d_qk_backward_q_vec4,
     source_1d_qk_backward_k,
     source_1d_qk_backward_k_inverse,
     source_2d_av,
@@ -53,6 +54,7 @@ _FUSED_3D_KERNELS: dict[int, Callable] = {}
 _QK_BWD_K_1D_KERNELS: dict[int, Callable] = {}
 _QK_BWD_K_INV_1D_KERNELS: dict[int, Callable] = {}
 _QK_BWD_Q_1D_KERNELS: dict[int, Callable] = {}
+_QK_BWD_Q4_1D_KERNELS: dict[int, Callable] = {}
 _AV_BWD_V_1D_KERNELS: dict[int, Callable] = {}
 _AV_BWD_V4_1D_KERNELS: dict[int, Callable] = {}
 _AV_BWD_ATTN_1D_KERNELS: dict[int, Callable] = {}
@@ -160,6 +162,17 @@ def _threadgroup_1d_qk_bwd_k_inverse(dim: int, length: int) -> tuple[int, int, i
     if d >= 64 and l >= 512:
         return (16, 8, 1)
     return _threadgroup_grad_v(d, l)
+
+
+def _threadgroup_1d_qk_bwd_q_vec4(dim4: int, length: int) -> tuple[int, int, int]:
+    return _threadgroup_grad_v_1d_vec4(dim4, length)
+
+
+def _use_vec4_1d_qk_grad_q(length: int, head_dim: int) -> bool:
+    if head_dim % 4 != 0 or head_dim < 16:
+        return False
+    # On very short sequences, scalar grad_q is often equivalent or better.
+    return length > 64
 
 
 def _use_vec4_1d_grad_v(length: int, head_dim: int) -> bool:
@@ -675,6 +688,25 @@ def _get_1d_qk_backward_q_kernel(kernel_size: int):
             ensure_row_contiguous=True,
         )
     return _QK_BWD_Q_1D_KERNELS[kernel_size]
+
+
+def _get_1d_qk_backward_q_vec4_kernel(kernel_size: int):
+    if kernel_size not in _QK_BWD_Q4_1D_KERNELS:
+        _QK_BWD_Q4_1D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na1d_qk_bwd_q4_k{kernel_size}",
+            input_names=[
+                "grad_attn",
+                "key",
+                "stride_param",
+                "dilation_param",
+                "causal_param",
+                "scale_param",
+            ],
+            output_names=["out"],
+            source=source_1d_qk_backward_q_vec4(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _QK_BWD_Q4_1D_KERNELS[kernel_size]
 
 
 def _get_1d_av_backward_v_kernel(kernel_size: int):
@@ -1617,11 +1649,23 @@ def na1d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
         dilation_param = mx.array([dil], dtype=mx.int32)
         causal_param = mx.array([1 if causal else 0], dtype=mx.int32)
         scale_param = mx.array([scale_value], dtype=mx.float32)
-        grad_q_kernel = _get_1d_qk_backward_q_kernel(ksize)
+        use_vec4_q = _use_vec4_1d_qk_grad_q(length, head_dim)
+        grad_q_kernel = (
+            _get_1d_qk_backward_q_vec4_kernel(ksize)
+            if use_vec4_q
+            else _get_1d_qk_backward_q_kernel(ksize)
+        )
+        grad_q_x = head_dim // 4 if use_vec4_q else length
+        grad_q_y = length if use_vec4_q else 1
+        grad_q_tg = (
+            _threadgroup_1d_qk_bwd_q_vec4(grad_q_x, length)
+            if use_vec4_q
+            else _threadgroup_1d_heavy(length)
+        )
         grad_q_m = grad_q_kernel(
             inputs=[grad_attn_m, k_m, stride_param, dilation_param, causal_param, scale_param],
-            grid=(length, 1, batch * heads),
-            threadgroup=_threadgroup_1d_heavy(length),
+            grid=(grad_q_x, grad_q_y, batch * heads),
+            threadgroup=grad_q_tg,
             output_shapes=[(batch, heads, length, head_dim)],
             output_dtypes=[mx.float32],
         )[0]

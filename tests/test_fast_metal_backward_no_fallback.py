@@ -146,6 +146,33 @@ def test_fast_metal_na1d_qk_backward_matches_pure_without_fallback(monkeypatch):
     np.testing.assert_allclose(np.array(gk_f), np.array(gk_p), rtol=1e-5, atol=1e-5)
 
 
+def test_fast_metal_na1d_qk_backward_vec4_path_matches_pure_without_fallback(monkeypatch):
+    if not fast_metal.is_available():
+        pytest.skip("fast_metal unavailable")
+
+    q = mx.random.normal((1, 129, 2, 16))
+    k = mx.random.normal((1, 129, 2, 16))
+    grad_attn = mx.random.normal((1, 65, 2, 9))
+    ks = (9,)
+    st = (2,)
+    dil = (2,)
+    caus = (True,)
+    scale = 0.31
+
+    gq_p, gk_p = pure.na1d_qk_backward(q, k, grad_attn, ks, st, dil, caus, scale)
+    mx.eval(gq_p, gk_p)
+
+    def _no_fallback(*_args, **_kwargs):
+        raise AssertionError("unexpected fallback to pure.na1d_qk_backward")
+
+    monkeypatch.setattr(pure, "na1d_qk_backward", _no_fallback)
+    gq_f, gk_f = fast_metal.na1d_qk_backward(q, k, grad_attn, ks, st, dil, caus, scale)
+    mx.eval(gq_f, gk_f)
+
+    np.testing.assert_allclose(np.array(gq_f), np.array(gq_p), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(np.array(gk_f), np.array(gk_p), rtol=1e-5, atol=1e-5)
+
+
 def test_fast_metal_na1d_av_backward_vec4_path_matches_pure_without_fallback(monkeypatch):
     if not fast_metal.is_available():
         pytest.skip("fast_metal unavailable")
