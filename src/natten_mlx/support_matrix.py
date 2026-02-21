@@ -27,10 +27,11 @@ def get_support_matrix() -> dict[str, dict]:
             "backward": {"na1d": True, "na2d": True, "na3d": True, "split_qk_av": True},
             "fusion": {"na1d": True, "na2d": True, "na3d": False},
             "constraints": [
-                "Fused fast path supports odd K (runtime-specialized) plus stride and per-axis causal masks.",
-                "2D fused fast path currently requires square kernels.",
-                "Split QK/AV kernels are specialized for non-causal stride=1, K in {3,5,7} (2D equal dilations).",
-                "3D is currently accelerated through split QK/AV kernels on the same specialization constraints.",
+                "Fused 1D fast path: odd K, stride>=1, dilation>=1, causal/non-causal supported.",
+                "Fused 2D fast path: square odd K, stride>=1 per axis, dilation>=1 per axis, causal/non-causal per axis.",
+                "Split 1D fast path: K in {3,5,7}, stride=1, non-causal.",
+                "Split 2D fast path: square K in {3,5,7}, stride=(1,1), equal dilations, non-causal on both axes.",
+                "Split 3D fast path: cubic K in {3,5,7}, stride=(1,1,1), equal dilations, non-causal on all axes.",
                 "Unsupported configs automatically fall back to pure backend.",
             ],
         },
@@ -42,7 +43,7 @@ def get_support_matrix() -> dict[str, dict]:
             "constraints": [
                 "Ships with an in-tree implementation that delegates to fast_metal where available, otherwise pure.",
                 "Can be overridden with an external extension via NATTEN_MLX_NANOBIND_MODULE.",
-                "When delegated to fast_metal, backend constraints match fast_metal constraints.",
+                "When delegated to fast_metal, the exact same fused/split eligibility constraints apply.",
             ],
         },
     }

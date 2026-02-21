@@ -110,13 +110,36 @@ Observed capabilities:
 2. Forward: full
 3. Backward: full
 4. Fusion: no
+5. Notes: full 1D/2D/3D semantic coverage and fallback baseline
 
 1. `fast_metal`:
 2. Forward: yes (fused + split on supported configs, fallback otherwise)
-3. Backward: yes (fused + split backward entrypoints, pure fallback for unsupported/error paths)
-4. Fusion: yes (supported config subset)
+3. Backward: yes (backend backward entrypoints for fused/split, pure fallback for unsupported/error paths)
+4. Fusion:
+5. 1D: yes (odd K, stride>=1, dilation>=1, causal/non-causal)
+6. 2D: yes (square odd K, per-axis stride/dilation >= 1, per-axis causal/non-causal)
+7. 3D: no fused path; split acceleration only
+8. Split acceleration eligibility:
+9. 1D: K in {3,5,7}, stride=1, non-causal
+10. 2D: square K in {3,5,7}, stride=(1,1), equal dilations, non-causal on both axes
+11. 3D: cubic K in {3,5,7}, stride=(1,1,1), equal dilations, non-causal on all axes
 
 1. `nanobind`:
 2. Forward: full (compiled extension when available; otherwise in-tree fallback delegates to fast_metal/pure)
 3. Backward: yes (compiled extension and fallback both expose backend backward entrypoints)
-4. Fusion: yes when delegated fast_metal fast path is eligible; otherwise fallback
+4. Fusion: matches fast_metal when delegated; otherwise pure fallback
+5. Constraints: exactly the same fused/split eligibility constraints as fast_metal when delegated
+
+## Final Perf Snapshot
+
+Generated on `2026-02-21` using:
+`uv run python benchmarks/final_perf_table.py --warmup 5 --trials 25`
+
+| Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal speedup vs pure | nanobind speedup vs pure |
+|---|---:|---:|---:|---:|---:|---:|
+| `na1d_k7_s1_d1_noncausal` | `forward` | 0.445 | 0.211 | 0.208 | 2.11x | 2.14x |
+| `na1d_k7_s1_d1_noncausal` | `backward` | 0.502 | 0.687 | 0.689 | 0.73x | 0.73x |
+| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.570 | 0.714 | 0.699 | 2.20x | 2.25x |
+| `na2d_k7x7_s1_d1_noncausal` | `backward` | 1.903 | 2.311 | 2.324 | 0.82x | 0.82x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.851 | 0.272 | 0.279 | 3.13x | 3.05x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.999 | 2.010 | 2.003 | 0.50x | 0.50x |

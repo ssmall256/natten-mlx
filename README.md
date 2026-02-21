@@ -5,7 +5,8 @@
 ## What It Is
 
 - 1D and 2D neighborhood attention functional ops for MLX arrays.
-- `mlx.nn.Module` wrappers for `NeighborhoodAttention1D` and `NeighborhoodAttention2D`.
+- 3D neighborhood attention functional ops for MLX arrays.
+- `mlx.nn.Module` wrappers for `NeighborhoodAttention1D`, `NeighborhoodAttention2D`, and `NeighborhoodAttention3D`.
 - Backend tiers with runtime dispatch:
   - Tier 0: pure MLX (implemented)
   - Tier 1: fast Metal kernels (fused + split forward paths with pure fallback)
@@ -34,6 +35,20 @@ out = na1d(q, k, v, kernel_size=7, stride=1, dilation=1, is_causal=False)
 x = mx.random.normal((B, L, H * D))
 layer = NeighborhoodAttention1D(embed_dim=H * D, num_heads=H, kernel_size=7)
 y = layer(x)
+```
+
+3D API is also available:
+
+```python
+import mlx.core as mx
+from natten_mlx import na3d, NeighborhoodAttention3D
+
+q = mx.random.normal((1, 8, 10, 12, 4, 16))
+out = na3d(q, q, q, kernel_size=(3, 3, 3))
+
+layer3d = NeighborhoodAttention3D(embed_dim=64, num_heads=4, kernel_size=(3, 3, 3))
+x3d = mx.random.normal((1, 8, 10, 12, 64))
+y3d = layer3d(x3d)
 ```
 
 ## Compat Mode
@@ -82,6 +97,32 @@ NATTEN_UPSTREAM_PARITY=1 uv run python -m pytest tests/test_upstream_parity.py -
 uv run python benchmarks/backend_smoke.py --output benchmarks/backend-smoke.json --github-warnings
 ```
 
+## Final Performance Table
+
+Snapshot generated from this repo on:
+- Platform: `macOS-26.3-arm64-arm-64bit`
+- Python: `3.11.11`
+- Command:
+
+```bash
+uv run python benchmarks/final_perf_table.py --warmup 5 --trials 25 --output-json benchmarks/final-perf.json --output-md benchmarks/final-perf.md
+```
+
+Median latency table (ms, lower is better):
+
+| Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal speedup vs pure | nanobind speedup vs pure |
+|---|---:|---:|---:|---:|---:|---:|
+| `na1d_k7_s1_d1_noncausal` | `forward` | 0.445 | 0.211 | 0.208 | 2.11x | 2.14x |
+| `na1d_k7_s1_d1_noncausal` | `backward` | 0.502 | 0.687 | 0.689 | 0.73x | 0.73x |
+| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.570 | 0.714 | 0.699 | 2.20x | 2.25x |
+| `na2d_k7x7_s1_d1_noncausal` | `backward` | 1.903 | 2.311 | 2.324 | 0.82x | 0.82x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.851 | 0.272 | 0.279 | 3.13x | 3.05x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.999 | 2.010 | 2.003 | 0.50x | 0.50x |
+
+Raw artifacts are written to:
+- `benchmarks/final-perf.json`
+- `benchmarks/final-perf.md`
+
 ## natten-mlx vs natten-mps
 
 - Use `natten-mlx` for MLX-native projects.
@@ -117,9 +158,16 @@ Backward support across backends uses explicit backend backward entrypoints for 
 
 ## Limitations
 
-- No 3D neighborhood attention yet.
-- Fast Metal fused acceleration currently targets non-causal, stride-1, K in `{3,5,7}` (2D additionally requires square kernel and equal dilations). Other configurations use pure backend for correctness.
-- Nanobind tier delegates to fast-metal where available (same fused-path constraints), otherwise pure fallback.
+- Fast Metal fused 3D is not implemented; 3D uses split acceleration where eligible.
+- Fast Metal split acceleration eligibility is strict:
+  - 1D split: `K in {3,5,7}`, `stride=1`, non-causal.
+  - 2D split: square `K in {3,5,7}`, `stride=(1,1)`, equal dilations, non-causal on both axes.
+  - 3D split: cubic `K in {3,5,7}`, `stride=(1,1,1)`, equal dilations, non-causal on all axes.
+- Fast Metal fused acceleration eligibility:
+  - 1D fused: odd `K`, `stride>=1`, `dilation>=1`, causal/non-causal supported.
+  - 2D fused: square odd `K`, per-axis `stride>=1`, per-axis `dilation>=1`, per-axis causal/non-causal supported.
+- Unsupported accelerated configurations fall back to pure backend for correctness.
+- Nanobind tier delegates to fast-metal where available (same exact eligibility constraints), otherwise pure fallback.
 - MLX lazy evaluation applies; this package does not force evaluation.
 
 ## License
