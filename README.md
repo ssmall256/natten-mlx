@@ -99,6 +99,18 @@ Current design targets three tiers:
 - MLX fast Metal kernels: fused and split forward paths for common configurations, with automatic fallback.
 - Pure MLX: full semantic coverage baseline.
 
+Nanobind tier resolution order:
+1. `NATTEN_MLX_NANOBIND_MODULE` override (if set)
+2. compiled in-tree extension: `natten_mlx._core._nanobind_ext`
+3. in-tree Python fallback: `natten_mlx._core._nanobind_impl`
+
+To build the in-tree nanobind extension locally:
+
+```bash
+uv pip install nanobind
+NATTEN_MLX_BUILD_NANOBIND=1 uv pip install --no-build-isolation -e .
+```
+
 Audit provenance for this synthesis: `BACKEND_SYNTHESIS.md`.
 
 Backward support across backends uses explicit backend backward entrypoints for fused and split paths, with pure fallback as safety.

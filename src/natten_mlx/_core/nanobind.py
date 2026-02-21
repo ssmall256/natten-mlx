@@ -1,8 +1,9 @@
 """Tier 2: nanobind-backed backend adapter.
 
-By default this loads the in-tree `natten_mlx._core._nanobind_impl` module,
-and may be overridden to an external compiled module via
-`NATTEN_MLX_NANOBIND_MODULE`.
+Resolution order:
+1. `NATTEN_MLX_NANOBIND_MODULE` override (if set).
+2. In-tree compiled extension: `natten_mlx._core._nanobind_ext`.
+3. In-tree Python fallback: `natten_mlx._core._nanobind_impl`.
 """
 
 from __future__ import annotations
@@ -12,16 +13,39 @@ import os
 
 from . import pure
 
-_MODULE_NAME = os.environ.get("NATTEN_MLX_NANOBIND_MODULE", "natten_mlx._core._nanobind_impl")
+_OVERRIDE = os.environ.get("NATTEN_MLX_NANOBIND_MODULE")
+_EXT: object | None = None
+_LOADED_MODULE_NAME: str | None = None
 
-try:
-    _EXT = importlib.import_module(_MODULE_NAME)
-except Exception:
-    _EXT = None
+_CANDIDATES = (
+    [_OVERRIDE] if _OVERRIDE else ["natten_mlx._core._nanobind_ext", "natten_mlx._core._nanobind_impl"]
+)
+
+for _name in _CANDIDATES:
+    if not _name:
+        continue
+    try:
+        _EXT = importlib.import_module(_name)
+        _LOADED_MODULE_NAME = _name
+        break
+    except Exception:
+        continue
+
+if _EXT is None and _OVERRIDE:
+    try:
+        _EXT = importlib.import_module("natten_mlx._core._nanobind_impl")
+        _LOADED_MODULE_NAME = "natten_mlx._core._nanobind_impl"
+    except Exception:
+        _EXT = None
+        _LOADED_MODULE_NAME = None
 
 
 def is_available() -> bool:
     return _EXT is not None
+
+
+def loaded_module_name() -> str | None:
+    return _LOADED_MODULE_NAME
 
 
 def _call_or_fallback(name: str, fallback, *args):

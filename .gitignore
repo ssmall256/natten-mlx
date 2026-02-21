@@ -3,7 +3,9 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+*.so
 *.egg-info/
+build/
 
 # Local environments and test caches
 .venv/

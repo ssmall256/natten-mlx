@@ -89,6 +89,8 @@ Observed capabilities:
 3. Kept pure fallback for unsupported fast-kernel configurations.
 4. Added in-tree nanobind backend implementation with optional external module override:
 5. `/Users/sam/Code/natten-mlx/src/natten_mlx/_core/_nanobind_impl.py`
+6. Added true nanobind C++ extension target with forward/backward bindings:
+7. `/Users/sam/Code/natten-mlx/src/natten_mlx/_core/_nanobind_ext.cpp`
 6. Added explicit backend capability API:
 7. `/Users/sam/Code/natten-mlx/src/natten_mlx/support_matrix.py`
 8. Hardened backward behavior:
@@ -115,6 +117,6 @@ Observed capabilities:
 4. Fusion: yes (supported config subset)
 
 1. `nanobind`:
-2. Forward: full (in-tree implementation delegates to fast_metal/pure)
-3. Backward: yes (mirrors fast_metal/pure backend backward entrypoints)
+2. Forward: full (compiled extension when available; otherwise in-tree fallback delegates to fast_metal/pure)
+3. Backward: yes (compiled extension and fallback both expose backend backward entrypoints)
 4. Fusion: yes when delegated fast_metal fast path is eligible; otherwise fallback

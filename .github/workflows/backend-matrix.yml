@@ -48,6 +48,7 @@ jobs:
           tests/test_backends.py
           tests/test_compat_gradients.py
           tests/test_functional.py
+          tests/test_nanobind_extension.py
           tests/test_na1d.py
           tests/test_na2d.py
           tests/test_autograd.py
