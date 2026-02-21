@@ -87,17 +87,18 @@ Observed capabilities:
 1. Added fast-MLX split kernel sources and wrappers.
 2. Added fast-MLX fused kernel sources and wrappers for 1D/2D.
 3. Kept pure fallback for unsupported fast-kernel configurations.
-4. Added explicit backend capability API:
-5. `/Users/sam/Code/natten-mlx/src/natten_mlx/support_matrix.py`
-6. Hardened backward behavior:
-7. Custom VJP now uses pure semantics for gradient evaluation when accelerated backends are active.
-8. Added tests for support matrix API.
+4. Added in-tree nanobind backend implementation with optional external module override:
+5. `/Users/sam/Code/natten-mlx/src/natten_mlx/_core/_nanobind_impl.py`
+6. Added explicit backend capability API:
+7. `/Users/sam/Code/natten-mlx/src/natten_mlx/support_matrix.py`
+8. Hardened backward behavior:
+9. Custom VJP now uses pure semantics for gradient evaluation when accelerated backends are active.
+10. Added tests for support matrix API.
 
 ### Deliberately Deferred
 
 1. Porting the full experimental backward-kernel suite from old `functional_metal.py` (high complexity and regression risk).
 2. Directly embedding Torch MPS extension code into MLX package.
-3. Declaring nanobind fusion as guaranteed without a concrete installed extension implementation.
 
 ## Current Matrix in This Repo
 
@@ -112,6 +113,6 @@ Observed capabilities:
 4. Fusion: yes (supported config subset)
 
 1. `nanobind`:
-2. Forward: adapter path; fallback to pure when extension unavailable
-3. Backward: follows pure fallback semantics unless extension overrides
-4. Fusion: extension-dependent
+2. Forward: full (in-tree implementation delegates to fast_metal/pure)
+3. Backward: yes for end-to-end `na1d`/`na2d` via pure-semantic custom VJP
+4. Fusion: yes when delegated fast_metal fast path is eligible; otherwise fallback

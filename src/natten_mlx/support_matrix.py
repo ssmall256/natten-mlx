@@ -36,10 +36,11 @@ def get_support_matrix() -> dict[str, dict]:
             "available": nanobind.is_available(),
             "forward": {"na1d": True, "na2d": True, "split_qk_av": True},
             "backward": {"na1d": True, "na2d": True},
-            "fusion": {"na1d": False, "na2d": False},
+            "fusion": {"na1d": True, "na2d": True},
             "constraints": [
-                "Uses optional extension module when installed; otherwise falls back to pure backend.",
-                "Fusion support depends on extension implementation.",
+                "Ships with an in-tree implementation that delegates to fast_metal where available, otherwise pure.",
+                "Can be overridden with an external extension via NATTEN_MLX_NANOBIND_MODULE.",
+                "When delegated to fast_metal, fused-path constraints match fast_metal constraints.",
             ],
         },
     }

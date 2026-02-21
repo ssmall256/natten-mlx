@@ -9,7 +9,7 @@
 - Backend tiers with runtime dispatch:
   - Tier 0: pure MLX (implemented)
   - Tier 1: fast Metal kernels (fused + split forward paths with pure fallback)
-  - Tier 2: nanobind/pure-Metal extension adapter (loads optional extension when installed, otherwise falls back)
+  - Tier 2: nanobind backend (in-tree implementation with optional external extension override)
 - Compatibility shims for historical NATTEN API eras (`v014`, `v015`, `v017`, `v020`).
 
 ## Installation
@@ -81,7 +81,7 @@ print(natten_mlx.get_support_matrix())
 ```
 
 Current design targets three tiers:
-- Metal kernels (via optional extension adapter): supported through `nanobind` adapter if installed, otherwise pure fallback.
+- Metal kernels (nanobind tier): supported via in-tree nanobind backend implementation, with optional override to an external extension.
 - MLX fast Metal kernels: fused and split forward paths for common configurations, with automatic fallback.
 - Pure MLX: full semantic coverage baseline.
 
@@ -93,6 +93,7 @@ Backward support for end-to-end `na1d` / `na2d` is preserved across backends by 
 
 - No 3D neighborhood attention yet.
 - Fast Metal fused acceleration currently targets non-causal, stride-1, K in `{3,5,7}` (2D additionally requires square kernel and equal dilations). Other configurations use pure backend for correctness.
+- Nanobind tier delegates to fast-metal where available (same fused-path constraints), otherwise pure fallback.
 - MLX lazy evaluation applies; this package does not force evaluation.
 
 ## License

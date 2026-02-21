@@ -10,3 +10,6 @@ def test_support_matrix_shape():
         assert set(row["backward"].keys()) == {"na1d", "na2d"}
         assert set(row["fusion"].keys()) == {"na1d", "na2d"}
         assert isinstance(row["constraints"], list)
+
+    assert matrix["fast_metal"]["fusion"] == {"na1d": True, "na2d": True}
+    assert matrix["nanobind"]["fusion"] == {"na1d": True, "na2d": True}

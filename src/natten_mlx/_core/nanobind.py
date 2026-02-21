@@ -1,4 +1,9 @@
-"""Tier 2: nanobind-backed backend adapter."""
+"""Tier 2: nanobind-backed backend adapter.
+
+By default this loads the in-tree `natten_mlx._core._nanobind_impl` module,
+and may be overridden to an external compiled module via
+`NATTEN_MLX_NANOBIND_MODULE`.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +12,7 @@ import os
 
 from . import pure
 
-_MODULE_NAME = os.environ.get("NATTEN_MLX_NANOBIND_MODULE", "natten_mlx._nanobind")
+_MODULE_NAME = os.environ.get("NATTEN_MLX_NANOBIND_MODULE", "natten_mlx._core._nanobind_impl")
 
 try:
     _EXT = importlib.import_module(_MODULE_NAME)
