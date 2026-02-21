@@ -9,14 +9,20 @@ import mlx.core as mx
 from . import pure
 from ._metal_sources import (
     source_1d_av,
+    source_1d_av_backward_v,
     source_1d_fused,
     source_1d_qk,
+    source_1d_qk_backward_k,
     source_2d_av,
+    source_2d_av_backward_v,
     source_2d_fused,
     source_2d_qk,
+    source_2d_qk_backward_k,
     source_3d_av,
+    source_3d_av_backward_v,
     source_3d_fused,
     source_3d_qk,
+    source_3d_qk_backward_k,
 )
 
 _KERNEL_BUILD_FAILED = False
@@ -29,6 +35,12 @@ _AV_3D_KERNELS: dict[int, Callable] = {}
 _FUSED_1D_KERNELS: dict[int, Callable] = {}
 _FUSED_2D_KERNELS: dict[int, Callable] = {}
 _FUSED_3D_KERNELS: dict[int, Callable] = {}
+_QK_BWD_K_1D_KERNELS: dict[int, Callable] = {}
+_AV_BWD_V_1D_KERNELS: dict[int, Callable] = {}
+_QK_BWD_K_2D_KERNELS: dict[int, Callable] = {}
+_AV_BWD_V_2D_KERNELS: dict[int, Callable] = {}
+_QK_BWD_K_3D_KERNELS: dict[int, Callable] = {}
+_AV_BWD_V_3D_KERNELS: dict[int, Callable] = {}
 _RPB_1D_CACHE: dict[tuple[int, int], mx.array] = {}
 _RPB_2D_CACHE: dict[tuple[int, int], mx.array] = {}
 _RPB_3D_CACHE: dict[tuple[int, int], mx.array] = {}
@@ -251,6 +263,120 @@ def _get_2d_fused_kernel(kernel_size: int):
     return _FUSED_2D_KERNELS[kernel_size]
 
 
+def _get_1d_qk_backward_k_kernel(kernel_size: int):
+    if kernel_size not in _QK_BWD_K_1D_KERNELS:
+        _QK_BWD_K_1D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na1d_qk_bwd_k_k{kernel_size}",
+            input_names=[
+                "grad_attn",
+                "query",
+                "stride_param",
+                "dilation_param",
+                "causal_param",
+                "scale_param",
+            ],
+            output_names=["out"],
+            source=source_1d_qk_backward_k(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _QK_BWD_K_1D_KERNELS[kernel_size]
+
+
+def _get_1d_av_backward_v_kernel(kernel_size: int):
+    if kernel_size not in _AV_BWD_V_1D_KERNELS:
+        _AV_BWD_V_1D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na1d_av_bwd_v_k{kernel_size}",
+            input_names=[
+                "attention_probs",
+                "grad_out",
+                "target_shape_param",
+                "stride_param",
+                "dilation_param",
+                "causal_param",
+            ],
+            output_names=["out"],
+            source=source_1d_av_backward_v(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _AV_BWD_V_1D_KERNELS[kernel_size]
+
+
+def _get_2d_qk_backward_k_kernel(kernel_size: int):
+    if kernel_size not in _QK_BWD_K_2D_KERNELS:
+        _QK_BWD_K_2D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na2d_qk_bwd_k_k{kernel_size}",
+            input_names=[
+                "grad_attn",
+                "query",
+                "stride_param",
+                "dilation_param",
+                "causal_param",
+                "scale_param",
+            ],
+            output_names=["out"],
+            source=source_2d_qk_backward_k(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _QK_BWD_K_2D_KERNELS[kernel_size]
+
+
+def _get_2d_av_backward_v_kernel(kernel_size: int):
+    if kernel_size not in _AV_BWD_V_2D_KERNELS:
+        _AV_BWD_V_2D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na2d_av_bwd_v_k{kernel_size}",
+            input_names=[
+                "attention_probs",
+                "grad_out",
+                "target_shape_param",
+                "stride_param",
+                "dilation_param",
+                "causal_param",
+            ],
+            output_names=["out"],
+            source=source_2d_av_backward_v(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _AV_BWD_V_2D_KERNELS[kernel_size]
+
+
+def _get_3d_qk_backward_k_kernel(kernel_size: int):
+    if kernel_size not in _QK_BWD_K_3D_KERNELS:
+        _QK_BWD_K_3D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na3d_qk_bwd_k_k{kernel_size}",
+            input_names=[
+                "grad_attn",
+                "query",
+                "stride_param",
+                "dilation_param",
+                "causal_param",
+                "scale_param",
+            ],
+            output_names=["out"],
+            source=source_3d_qk_backward_k(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _QK_BWD_K_3D_KERNELS[kernel_size]
+
+
+def _get_3d_av_backward_v_kernel(kernel_size: int):
+    if kernel_size not in _AV_BWD_V_3D_KERNELS:
+        _AV_BWD_V_3D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na3d_av_bwd_v_k{kernel_size}",
+            input_names=[
+                "attention_probs",
+                "grad_out",
+                "target_shape_param",
+                "stride_param",
+                "dilation_param",
+                "causal_param",
+            ],
+            output_names=["out"],
+            source=source_3d_av_backward_v(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _AV_BWD_V_3D_KERNELS[kernel_size]
+
+
 def _is_valid_kernel_size(kernel_size: int) -> bool:
     return kernel_size > 0 and (kernel_size % 2 == 1)
 
@@ -333,34 +459,6 @@ def _with_grad_fallback(fn, fallback):
         return fn()
     except Exception:
         return fallback()
-
-
-def _scatter_neighbor_contrib_1d(
-    contrib: mx.array,
-    indices: mx.array,
-    valid: mx.array,
-    input_length: int,
-) -> mx.array:
-    # contrib: [B, O, H, K, D], indices/valid: [O, K] -> out: [B, L, H, D]
-    positions = mx.arange(input_length, dtype=mx.int32)
-    one_hot = mx.equal(indices[..., None], positions[None, None, :])
-    one_hot = mx.logical_and(one_hot, valid[..., None])
-    weights = _cast(one_hot, contrib.dtype)
-    return mx.einsum("bohkd,okl->blhd", contrib, weights)
-
-
-def _scatter_neighbor_contrib_flat(
-    contrib: mx.array,
-    indices_flat: mx.array,
-    valid_flat: mx.array,
-    input_size: int,
-) -> mx.array:
-    # contrib: [B, O, H, K, D], indices/valid: [O, K] -> out: [B, L, H, D]
-    positions = mx.arange(input_size, dtype=mx.int32)
-    one_hot = mx.equal(indices_flat[..., None], positions[None, None, :])
-    one_hot = mx.logical_and(one_hot, valid_flat[..., None])
-    weights = _cast(one_hot, contrib.dtype)
-    return mx.einsum("bohkd,okl->blhd", contrib, weights)
 
 
 def na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
@@ -918,8 +1016,21 @@ def na1d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
         grad_attn_masked = mx.where(valid_mask, grad_attn, mx.zeros_like(grad_attn))
         grad_q_sel = scale_value * mx.sum(grad_attn_masked[..., None] * k_neighbors, axis=-2)
 
-        grad_k_neighbors = scale_value * grad_attn_masked[..., None] * q_sel[..., None, :]
-        grad_k = _scatter_neighbor_contrib_1d(grad_k_neighbors, indices, valid, length)
+        bwd_kernel = _get_1d_qk_backward_k_kernel(ksize)
+        grad_attn_m = _to_metal_1d(_cast(grad_attn_masked, mx.float32))
+        q_m = _to_metal_1d(_cast(q, mx.float32))
+        stride_param = mx.array([step], dtype=mx.int32)
+        dilation_param = mx.array([dil], dtype=mx.int32)
+        causal_param = mx.array([1 if causal else 0], dtype=mx.int32)
+        scale_param = mx.array([scale_value], dtype=mx.float32)
+        grad_k_m = bwd_kernel(
+            inputs=[grad_attn_m, q_m, stride_param, dilation_param, causal_param, scale_param],
+            grid=(length, 1, batch * heads),
+            threadgroup=_threadgroup_1d(length),
+            output_shapes=[(batch, heads, length, head_dim)],
+            output_dtypes=[mx.float32],
+        )[0]
+        grad_k = _cast(_from_metal_1d(grad_k_m), k.dtype)
 
         idx = mx.reshape(qpos, (1, out_len, 1, 1))
         grad_q = mx.put_along_axis(
@@ -928,7 +1039,7 @@ def na1d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
             _cast(grad_q_sel, q.dtype),
             axis=1,
         )
-        return grad_q, _cast(grad_k, k.dtype)
+        return grad_q, grad_k
 
     return _with_grad_fallback(
         _run,
@@ -964,9 +1075,29 @@ def na1d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
         grad_attn = mx.where(valid_mask, grad_attn, mx.zeros_like(grad_attn))
 
         attn_masked = mx.where(valid_mask, attn, mx.zeros_like(attn))
-        grad_v_neighbors = attn_masked[..., None] * grad_out[..., None, :]
-        grad_v = _scatter_neighbor_contrib_1d(grad_v_neighbors, indices, valid, length)
-        return _cast(grad_attn, attn.dtype), _cast(grad_v, v.dtype)
+        bwd_kernel = _get_1d_av_backward_v_kernel(ksize)
+        attn_m = _to_metal_1d(_cast(attn_masked, mx.float32))
+        grad_out_m = _to_metal_1d(_cast(grad_out, mx.float32))
+        target_shape_param = mx.array([length], dtype=mx.int32)
+        stride_param = mx.array([step], dtype=mx.int32)
+        dilation_param = mx.array([dil], dtype=mx.int32)
+        causal_param = mx.array([1 if causal else 0], dtype=mx.int32)
+        grad_v_m = bwd_kernel(
+            inputs=[
+                attn_m,
+                grad_out_m,
+                target_shape_param,
+                stride_param,
+                dilation_param,
+                causal_param,
+            ],
+            grid=(length, 1, batch * heads),
+            threadgroup=_threadgroup_1d(length),
+            output_shapes=[(batch, heads, length, head_dim)],
+            output_dtypes=[mx.float32],
+        )[0]
+        grad_v = _cast(_from_metal_1d(grad_v_m), v.dtype)
+        return _cast(grad_attn, attn.dtype), grad_v
 
     return _with_grad_fallback(
         _run,
@@ -1014,14 +1145,24 @@ def na2d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
         grad_attn_masked = mx.where(valid_mask, grad_attn, mx.zeros_like(grad_attn))
         grad_q_sel = scale_value * mx.sum(grad_attn_masked[..., None] * k_neighbors, axis=-2)
 
-        grad_k_neighbors = scale_value * grad_attn_masked[..., None] * q_sel[..., None, :]
-        grad_k_neighbors = mx.reshape(grad_k_neighbors, (batch, out_h * out_w, heads, area, head_dim))
-        idx_flat = mx.reshape(indices, (out_h * out_w, area))
-        valid_flat = mx.reshape(valid, (out_h * out_w, area))
-        grad_k_flat = _scatter_neighbor_contrib_flat(
-            grad_k_neighbors, idx_flat, valid_flat, flat_spatial
+        bwd_kernel = _get_2d_qk_backward_k_kernel(kh)
+        grad_attn_m = _to_metal_2d(_cast(grad_attn_masked, mx.float32))
+        q_m = _to_metal_2d(_cast(q, mx.float32))
+        stride_param = mx.array([sh, sw], dtype=mx.int32)
+        dilation_param = mx.array([int(dilation[0]), int(dilation[1])], dtype=mx.int32)
+        causal_param = mx.array(
+            [1 if bool(is_causal[0]) else 0, 1 if bool(is_causal[1]) else 0],
+            dtype=mx.int32,
         )
-        grad_k = mx.reshape(grad_k_flat, (batch, height, width, heads, head_dim))
+        scale_param = mx.array([scale_value], dtype=mx.float32)
+        grad_k_m = bwd_kernel(
+            inputs=[grad_attn_m, q_m, stride_param, dilation_param, causal_param, scale_param],
+            grid=(width, height, batch * heads),
+            threadgroup=_threadgroup_2d(height, width),
+            output_shapes=[(batch, heads, height, width, head_dim)],
+            output_dtypes=[mx.float32],
+        )[0]
+        grad_k = _cast(_from_metal_2d(grad_k_m), k.dtype)
 
         idx_h = mx.reshape(qh, (1, out_h, 1, 1, 1))
         grad_q_h = mx.put_along_axis(
@@ -1037,7 +1178,7 @@ def na2d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
             grad_q_h,
             axis=2,
         )
-        return grad_q, _cast(grad_k, k.dtype)
+        return grad_q, grad_k
 
     return _with_grad_fallback(
         _run,
@@ -1078,15 +1219,32 @@ def na2d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
         grad_attn = mx.where(valid_mask, grad_attn, mx.zeros_like(grad_attn))
 
         attn_masked = mx.where(valid_mask, attn, mx.zeros_like(attn))
-        grad_v_neighbors = attn_masked[..., None] * grad_out[..., None, :]
-        grad_v_neighbors = mx.reshape(grad_v_neighbors, (batch, out_h * out_w, heads, area, head_dim))
-        idx_flat = mx.reshape(indices, (out_h * out_w, area))
-        valid_flat = mx.reshape(valid, (out_h * out_w, area))
-        grad_v_flat = _scatter_neighbor_contrib_flat(
-            grad_v_neighbors, idx_flat, valid_flat, flat_spatial
+        bwd_kernel = _get_2d_av_backward_v_kernel(int(kernel_size[0]))
+        attn_m = _to_metal_2d(_cast(attn_masked, mx.float32))
+        grad_out_m = _to_metal_2d(_cast(grad_out, mx.float32))
+        target_shape_param = mx.array([height, width], dtype=mx.int32)
+        stride_param = mx.array([int(stride[0]), int(stride[1])], dtype=mx.int32)
+        dilation_param = mx.array([int(dilation[0]), int(dilation[1])], dtype=mx.int32)
+        causal_param = mx.array(
+            [1 if bool(is_causal[0]) else 0, 1 if bool(is_causal[1]) else 0],
+            dtype=mx.int32,
         )
-        grad_v = mx.reshape(grad_v_flat, (batch, height, width, heads, head_dim))
-        return _cast(grad_attn, attn.dtype), _cast(grad_v, v.dtype)
+        grad_v_m = bwd_kernel(
+            inputs=[
+                attn_m,
+                grad_out_m,
+                target_shape_param,
+                stride_param,
+                dilation_param,
+                causal_param,
+            ],
+            grid=(width, height, batch * heads),
+            threadgroup=_threadgroup_2d(height, width),
+            output_shapes=[(batch, heads, height, width, head_dim)],
+            output_dtypes=[mx.float32],
+        )[0]
+        grad_v = _cast(_from_metal_2d(grad_v_m), v.dtype)
+        return _cast(grad_attn, attn.dtype), grad_v
 
     return _with_grad_fallback(
         _run,
@@ -1142,16 +1300,31 @@ def na3d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
         grad_attn_masked = mx.where(valid_mask, grad_attn, mx.zeros_like(grad_attn))
         grad_q_sel = scale_value * mx.sum(grad_attn_masked[..., None] * k_neighbors, axis=-2)
 
-        grad_k_neighbors = scale_value * grad_attn_masked[..., None] * q_sel[..., None, :]
-        grad_k_neighbors = mx.reshape(
-            grad_k_neighbors, (batch, out_d * out_h * out_w, heads, volume, head_dim)
+        bwd_kernel = _get_3d_qk_backward_k_kernel(kd)
+        grad_attn_m = _to_metal_3d(_cast(grad_attn_masked, mx.float32))
+        q_m = _to_metal_3d(_cast(q, mx.float32))
+        stride_param = mx.array([sd, sh, sw], dtype=mx.int32)
+        dilation_param = mx.array(
+            [int(dilation[0]), int(dilation[1]), int(dilation[2])],
+            dtype=mx.int32,
         )
-        idx_flat = mx.reshape(indices, (out_d * out_h * out_w, volume))
-        valid_flat = mx.reshape(valid, (out_d * out_h * out_w, volume))
-        grad_k_flat = _scatter_neighbor_contrib_flat(
-            grad_k_neighbors, idx_flat, valid_flat, flat_spatial
+        causal_param = mx.array(
+            [
+                1 if bool(is_causal[0]) else 0,
+                1 if bool(is_causal[1]) else 0,
+                1 if bool(is_causal[2]) else 0,
+            ],
+            dtype=mx.int32,
         )
-        grad_k = mx.reshape(grad_k_flat, (batch, depth, height, width, heads, head_dim))
+        scale_param = mx.array([scale_value], dtype=mx.float32)
+        grad_k_m = bwd_kernel(
+            inputs=[grad_attn_m, q_m, stride_param, dilation_param, causal_param, scale_param],
+            grid=(width, height, batch * heads * depth),
+            threadgroup=_threadgroup_2d(height, width),
+            output_shapes=[(batch, heads, depth, height, width, head_dim)],
+            output_dtypes=[mx.float32],
+        )[0]
+        grad_k = _cast(_from_metal_3d(grad_k_m), k.dtype)
 
         idx_d = mx.reshape(qd, (1, out_d, 1, 1, 1, 1))
         grad_q_d = mx.put_along_axis(
@@ -1174,7 +1347,7 @@ def na3d_qk_backward(q, k, grad_attn, kernel_size, stride, dilation, is_causal, 
             grad_q_h,
             axis=3,
         )
-        return grad_q, _cast(grad_k, k.dtype)
+        return grad_q, grad_k
 
     return _with_grad_fallback(
         _run,
@@ -1220,17 +1393,39 @@ def na3d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
         grad_attn = mx.where(valid_mask, grad_attn, mx.zeros_like(grad_attn))
 
         attn_masked = mx.where(valid_mask, attn, mx.zeros_like(attn))
-        grad_v_neighbors = attn_masked[..., None] * grad_out[..., None, :]
-        grad_v_neighbors = mx.reshape(
-            grad_v_neighbors, (batch, out_d * out_h * out_w, heads, volume, head_dim)
+        bwd_kernel = _get_3d_av_backward_v_kernel(int(kernel_size[0]))
+        attn_m = _to_metal_3d(_cast(attn_masked, mx.float32))
+        grad_out_m = _to_metal_3d(_cast(grad_out, mx.float32))
+        target_shape_param = mx.array([depth, height, width], dtype=mx.int32)
+        stride_param = mx.array([int(stride[0]), int(stride[1]), int(stride[2])], dtype=mx.int32)
+        dilation_param = mx.array(
+            [int(dilation[0]), int(dilation[1]), int(dilation[2])],
+            dtype=mx.int32,
         )
-        idx_flat = mx.reshape(indices, (out_d * out_h * out_w, volume))
-        valid_flat = mx.reshape(valid, (out_d * out_h * out_w, volume))
-        grad_v_flat = _scatter_neighbor_contrib_flat(
-            grad_v_neighbors, idx_flat, valid_flat, flat_spatial
+        causal_param = mx.array(
+            [
+                1 if bool(is_causal[0]) else 0,
+                1 if bool(is_causal[1]) else 0,
+                1 if bool(is_causal[2]) else 0,
+            ],
+            dtype=mx.int32,
         )
-        grad_v = mx.reshape(grad_v_flat, (batch, depth, height, width, heads, head_dim))
-        return _cast(grad_attn, attn.dtype), _cast(grad_v, v.dtype)
+        grad_v_m = bwd_kernel(
+            inputs=[
+                attn_m,
+                grad_out_m,
+                target_shape_param,
+                stride_param,
+                dilation_param,
+                causal_param,
+            ],
+            grid=(width, height, batch * heads * depth),
+            threadgroup=_threadgroup_2d(height, width),
+            output_shapes=[(batch, heads, depth, height, width, head_dim)],
+            output_dtypes=[mx.float32],
+        )[0]
+        grad_v = _cast(_from_metal_3d(grad_v_m), v.dtype)
+        return _cast(grad_attn, attn.dtype), grad_v
 
     return _with_grad_fallback(
         _run,
