@@ -98,11 +98,9 @@ template <typename T>
 
   int q_base = sf_base_3d(b, h, qd, qh, qw, p.ID, p.IH, p.IW, p.H, p.D);
 
-  // Pass 1: compute scores, store logits
+  // Pass 1: compute scores, store logits and key base addresses
   float logits[343];  // max K=7 -> 343 neighbors for 3D
-  int key_d[343];
-  int key_h[343];
-  int key_w[343];
+  int key_base[343];  // precomputed linear base addresses
   float max_logit = -INFINITY;
   int n_idx = 0;
 
@@ -121,20 +119,17 @@ template <typename T>
         bool valid_w = p.CW ? (iw >= 0 && iw <= qw && iw < p.IW) : (iw >= 0 && iw < p.IW);
 
         float score = -INFINITY;
-        int kd_out = -1, kh_out = -1, kw_out = -1;
+        int kb = -1;
         if (valid_d && valid_h && valid_w) {
-          kd_out = id; kh_out = ih; kw_out = iw;
-          int k_base = sf_base_3d(b, h, id, ih, iw, p.ID, p.IH, p.IW, p.H, p.D);
+          kb = sf_base_3d(b, h, id, ih, iw, p.ID, p.IH, p.IW, p.H, p.D);
           float acc = 0.0f;
           for (int d = 0; d < p.D; ++d) {
-            acc += (float)query[q_base + d] * (float)key[k_base + d];
+            acc += (float)query[q_base + d] * (float)key[kb + d];
           }
           score = acc * p.SCALE;
         }
         logits[n_idx] = score;
-        key_d[n_idx] = kd_out;
-        key_h[n_idx] = kh_out;
-        key_w[n_idx] = kw_out;
+        key_base[n_idx] = kb;
         max_logit = max(max_logit, score);
         n_idx++;
       }
@@ -149,16 +144,14 @@ template <typename T>
   }
   float inv_denom = denom > 0.0f ? (1.0f / denom) : 0.0f;
 
-  // Pass 3: weighted value aggregation
+  // Pass 3: weighted value aggregation (precomputed base addresses)
   int out_base = sf_base_3d(b, h, od, oh, ow, out_d, out_h, out_w, p.H, p.D);
   for (int d = 0; d < p.D; ++d) {
     float acc = 0.0f;
     for (int n = 0; n < K3; ++n) {
-      if (key_d[n] >= 0) {
+      if (key_base[n] >= 0) {
         float w = logits[n] * inv_denom;
-        int v_idx = sf_base_3d(b, h, key_d[n], key_h[n], key_w[n],
-                               p.ID, p.IH, p.IW, p.H, p.D) + d;
-        acc += w * (float)value[v_idx];
+        acc += w * (float)value[key_base[n] + d];
       }
     }
     out[out_base + d] = (T)acc;
@@ -205,9 +198,7 @@ template <typename T, typename T4>
   int q_base = sf_base_3d(b, h, qd, qh, qw, p.ID, p.IH, p.IW, p.H, p.D);
 
   float logits[343];
-  int key_d[343];
-  int key_h[343];
-  int key_w[343];
+  int key_base[343];  // precomputed linear base addresses
   float max_logit = -INFINITY;
   int n_idx = 0;
 
@@ -226,22 +217,19 @@ template <typename T, typename T4>
         bool valid_w = p.CW ? (iw >= 0 && iw <= qw && iw < p.IW) : (iw >= 0 && iw < p.IW);
 
         float score = -INFINITY;
-        int kd_out = -1, kh_out = -1, kw_out = -1;
+        int kb = -1;
         if (valid_d && valid_h && valid_w) {
-          kd_out = id; kh_out = ih; kw_out = iw;
-          int k_base = sf_base_3d(b, h, id, ih, iw, p.ID, p.IH, p.IW, p.H, p.D);
+          kb = sf_base_3d(b, h, id, ih, iw, p.ID, p.IH, p.IW, p.H, p.D);
           float acc = 0.0f;
           for (int d4 = 0; d4 < dim4; ++d4) {
             const device T4* q4 = reinterpret_cast<const device T4*>(query + q_base + d4 * 4);
-            const device T4* k4 = reinterpret_cast<const device T4*>(key + k_base + d4 * 4);
+            const device T4* k4 = reinterpret_cast<const device T4*>(key + kb + d4 * 4);
             acc += dot(float4(*q4), float4(*k4));
           }
           score = acc * p.SCALE;
         }
         logits[n_idx] = score;
-        key_d[n_idx] = kd_out;
-        key_h[n_idx] = kh_out;
-        key_w[n_idx] = kw_out;
+        key_base[n_idx] = kb;
         max_logit = max(max_logit, score);
         n_idx++;
       }
@@ -256,16 +244,14 @@ template <typename T, typename T4>
   }
   float inv_denom = denom > 0.0f ? (1.0f / denom) : 0.0f;
 
-  // Weighted value aggregation (vec4)
+  // Weighted value aggregation (vec4, precomputed base addresses)
   int out_base = sf_base_3d(b, h, od, oh, ow, out_d, out_h, out_w, p.H, p.D);
   for (int d4 = 0; d4 < dim4; ++d4) {
     float4 acc = float4(0.0f);
     for (int n = 0; n < K3; ++n) {
-      if (key_d[n] >= 0) {
+      if (key_base[n] >= 0) {
         float w = logits[n] * inv_denom;
-        int v_base = sf_base_3d(b, h, key_d[n], key_h[n], key_w[n],
-                                p.ID, p.IH, p.IW, p.H, p.D) + d4 * 4;
-        const device T4* v4 = reinterpret_cast<const device T4*>(value + v_base);
+        const device T4* v4 = reinterpret_cast<const device T4*>(value + key_base[n] + d4 * 4);
         acc += w * float4(*v4);
       }
     }
@@ -506,7 +492,7 @@ template <typename T, typename T4>
 }
 
 // ======================================================================
-// 3D Backward — grad_q
+// 3D Backward — grad_q (vec4, K-outer D-inner)
 // Thread grid: (IW, IH, B*H*ID)
 // ======================================================================
 
@@ -534,6 +520,8 @@ template <typename T>
   int K = has_fc_k ? FC_K : p.K;
   int K3 = K * K * K;
   int nh = K / 2;
+  int dim4 = p.D / 4;
+  int rem = p.D - dim4 * 4;
 
   int base = sf_base_3d(b, h, id, ih, iw, p.ID, p.IH, p.IW, p.H, p.D);
 
@@ -555,33 +543,48 @@ template <typename T>
 
   int gl_base = (((((b * out_d + od) * out_h + oh) * out_w + ow) * p.H + h) * K3);
 
-  for (int d = 0; d < p.D; ++d) {
-    float acc = 0.0f;
-    int n_idx = 0;
-    for (int kd = 0; kd < K; ++kd) {
-      int kid = p.CD ? (id - (K - 1 - kd) * p.DD) : (nd + kd * p.DD);
-      bool vd = p.CD ? (kid >= 0 && kid <= id && kid < p.ID) : (kid >= 0 && kid < p.ID);
-      for (int kh = 0; kh < K; ++kh) {
-        int kih = p.CH ? (ih - (K - 1 - kh) * p.DH) : (nh_start + kh * p.DH);
-        bool vh = p.CH ? (kih >= 0 && kih <= ih && kih < p.IH) : (kih >= 0 && kih < p.IH);
-        for (int kw = 0; kw < K; ++kw) {
-          int kiw = p.CW ? (iw - (K - 1 - kw) * p.DW) : (nw + kw * p.DW);
-          bool vw = p.CW ? (kiw >= 0 && kiw <= iw && kiw < p.IW) : (kiw >= 0 && kiw < p.IW);
-          if (vd && vh && vw) {
-            float gl = grad_logits[gl_base + n_idx];
-            int k_idx = sf_base_3d(b, h, kid, kih, kiw, p.ID, p.IH, p.IW, p.H, p.D) + d;
-            acc += gl * key[k_idx];
+  // K-outer, D-inner with vec4 + scalar remainder
+  float4 acc4[16] = {};
+  float acc_rem[4] = {};
+  int n_idx = 0;
+  for (int kd = 0; kd < K; ++kd) {
+    int kid = p.CD ? (id - (K - 1 - kd) * p.DD) : (nd + kd * p.DD);
+    bool vd = p.CD ? (kid >= 0 && kid <= id && kid < p.ID) : (kid >= 0 && kid < p.ID);
+    for (int kh = 0; kh < K; ++kh) {
+      int kih = p.CH ? (ih - (K - 1 - kh) * p.DH) : (nh_start + kh * p.DH);
+      bool vh = p.CH ? (kih >= 0 && kih <= ih && kih < p.IH) : (kih >= 0 && kih < p.IH);
+      for (int kw = 0; kw < K; ++kw) {
+        int kiw = p.CW ? (iw - (K - 1 - kw) * p.DW) : (nw + kw * p.DW);
+        bool vw = p.CW ? (kiw >= 0 && kiw <= iw && kiw < p.IW) : (kiw >= 0 && kiw < p.IW);
+        if (vd && vh && vw) {
+          float gl = grad_logits[gl_base + n_idx];
+          int k_start = sf_base_3d(b, h, kid, kih, kiw, p.ID, p.IH, p.IW, p.H, p.D);
+          for (int d4 = 0; d4 < dim4; ++d4) {
+            acc4[d4] += gl * *(device const float4*)(key + k_start + d4 * 4);
           }
-          n_idx++;
+          for (int r = 0; r < rem; ++r) {
+            acc_rem[r] += gl * key[k_start + dim4 * 4 + r];
+          }
         }
+        n_idx++;
       }
     }
-    grad_q[base + d] = (T)(acc * p.SCALE);
+  }
+  float scale = p.SCALE;
+  for (int d4 = 0; d4 < dim4; ++d4) {
+    float4 v = acc4[d4] * scale;
+    grad_q[base + d4 * 4 + 0] = (T)v.x;
+    grad_q[base + d4 * 4 + 1] = (T)v.y;
+    grad_q[base + d4 * 4 + 2] = (T)v.z;
+    grad_q[base + d4 * 4 + 3] = (T)v.w;
+  }
+  for (int r = 0; r < rem; ++r) {
+    grad_q[base + dim4 * 4 + r] = (T)(acc_rem[r] * scale);
   }
 }
 
 // ======================================================================
-// 3D Backward — grad_k (direct nonatomic)
+// 3D Backward — grad_k (vec4, contributor-outer D-inner)
 // Thread grid: (IW, IH, B*H*ID)
 // ======================================================================
 
@@ -610,86 +613,113 @@ template <typename T>
   int K3 = K * K * K;
   int nh = K / 2;
   int k_base = sf_base_3d(b, h, kd, kh, kw, p.ID, p.IH, p.IW, p.H, p.D);
+  int dim4 = p.D / 4;
+  int rem = p.D - dim4 * 4;
 
-  for (int d = 0; d < p.D; ++d) {
-    float acc = 0.0f;
+  // Precompute contributing queries (D-independent inverse mapping)
+  int gl_indices[512];
+  int q_bases[512];
+  int contrib_count = 0;
 
-    for (int od = 0; od < out_d; ++od) {
-      int qd = od * p.SD;
-      if (qd >= p.ID) continue;
+  for (int od = 0; od < out_d; ++od) {
+    int qd = od * p.SD;
+    if (qd >= p.ID) continue;
 
-      int nd = p.CD ? 0 : natten_window_start_3d(qd, p.ID, K, nh, p.DD);
-      int kd_offset = -1;
-      if (p.CD) {
-        int diff = qd - kd;
-        if (diff >= 0 && diff % p.DD == 0) {
-          int ki = (K - 1) - diff / p.DD;
-          if (ki >= 0 && ki < K) kd_offset = ki;
-        }
-      } else {
-        int diff = kd - nd;
-        if (diff >= 0 && diff % p.DD == 0) {
-          int ki = diff / p.DD;
-          if (ki >= 0 && ki < K) kd_offset = ki;
-        }
+    int nd = p.CD ? 0 : natten_window_start_3d(qd, p.ID, K, nh, p.DD);
+    int kd_offset = -1;
+    if (p.CD) {
+      int diff = qd - kd;
+      if (diff >= 0 && diff % p.DD == 0) {
+        int ki = (K - 1) - diff / p.DD;
+        if (ki >= 0 && ki < K) kd_offset = ki;
       }
-      if (kd_offset < 0) continue;
-
-      for (int oh = 0; oh < out_h; ++oh) {
-        int qh = oh * p.SH;
-        if (qh >= p.IH) continue;
-
-        int nh_start = p.CH ? 0 : natten_window_start_3d(qh, p.IH, K, nh, p.DH);
-        int kh_offset = -1;
-        if (p.CH) {
-          int diff = qh - kh;
-          if (diff >= 0 && diff % p.DH == 0) {
-            int ki = (K - 1) - diff / p.DH;
-            if (ki >= 0 && ki < K) kh_offset = ki;
-          }
-        } else {
-          int diff = kh - nh_start;
-          if (diff >= 0 && diff % p.DH == 0) {
-            int ki = diff / p.DH;
-            if (ki >= 0 && ki < K) kh_offset = ki;
-          }
-        }
-        if (kh_offset < 0) continue;
-
-        for (int ow = 0; ow < out_w; ++ow) {
-          int qw = ow * p.SW;
-          if (qw >= p.IW) continue;
-
-          int nw = p.CW ? 0 : natten_window_start_3d(qw, p.IW, K, nh, p.DW);
-          int kw_offset = -1;
-          if (p.CW) {
-            int diff = qw - kw;
-            if (diff >= 0 && diff % p.DW == 0) {
-              int ki = (K - 1) - diff / p.DW;
-              if (ki >= 0 && ki < K) kw_offset = ki;
-            }
-          } else {
-            int diff = kw - nw;
-            if (diff >= 0 && diff % p.DW == 0) {
-              int ki = diff / p.DW;
-              if (ki >= 0 && ki < K) kw_offset = ki;
-            }
-          }
-          if (kw_offset < 0) continue;
-
-          int kpos = (kd_offset * K + kh_offset) * K + kw_offset;
-          int gl_idx = (((((b * out_d + od) * out_h + oh) * out_w + ow) * p.H + h) * K3) + kpos;
-          int q_idx = sf_base_3d(b, h, qd, qh, qw, p.ID, p.IH, p.IW, p.H, p.D) + d;
-          acc += grad_logits[gl_idx] * query[q_idx];
-        }
+    } else {
+      int diff = kd - nd;
+      if (diff >= 0 && diff % p.DD == 0) {
+        int ki = diff / p.DD;
+        if (ki >= 0 && ki < K) kd_offset = ki;
       }
     }
-    grad_k[k_base + d] = (T)(acc * p.SCALE);
+    if (kd_offset < 0) continue;
+
+    for (int oh = 0; oh < out_h; ++oh) {
+      int qh = oh * p.SH;
+      if (qh >= p.IH) continue;
+
+      int nh_start = p.CH ? 0 : natten_window_start_3d(qh, p.IH, K, nh, p.DH);
+      int kh_offset = -1;
+      if (p.CH) {
+        int diff = qh - kh;
+        if (diff >= 0 && diff % p.DH == 0) {
+          int ki = (K - 1) - diff / p.DH;
+          if (ki >= 0 && ki < K) kh_offset = ki;
+        }
+      } else {
+        int diff = kh - nh_start;
+        if (diff >= 0 && diff % p.DH == 0) {
+          int ki = diff / p.DH;
+          if (ki >= 0 && ki < K) kh_offset = ki;
+        }
+      }
+      if (kh_offset < 0) continue;
+
+      for (int ow = 0; ow < out_w && contrib_count < 512; ++ow) {
+        int qw = ow * p.SW;
+        if (qw >= p.IW) continue;
+
+        int nw = p.CW ? 0 : natten_window_start_3d(qw, p.IW, K, nh, p.DW);
+        int kw_offset = -1;
+        if (p.CW) {
+          int diff = qw - kw;
+          if (diff >= 0 && diff % p.DW == 0) {
+            int ki = (K - 1) - diff / p.DW;
+            if (ki >= 0 && ki < K) kw_offset = ki;
+          }
+        } else {
+          int diff = kw - nw;
+          if (diff >= 0 && diff % p.DW == 0) {
+            int ki = diff / p.DW;
+            if (ki >= 0 && ki < K) kw_offset = ki;
+          }
+        }
+        if (kw_offset < 0) continue;
+
+        int kpos = (kd_offset * K + kh_offset) * K + kw_offset;
+        gl_indices[contrib_count] = (((((b * out_d + od) * out_h + oh) * out_w + ow) * p.H + h) * K3) + kpos;
+        q_bases[contrib_count] = sf_base_3d(b, h, qd, qh, qw, p.ID, p.IH, p.IW, p.H, p.D);
+        contrib_count++;
+      }
+    }
+  }
+
+  // Contributor-outer, D-inner with vec4 + scalar remainder
+  float4 acc4[16] = {};
+  float acc_rem[4] = {};
+  for (int c = 0; c < contrib_count; ++c) {
+    float gl = grad_logits[gl_indices[c]];
+    int qb = q_bases[c];
+    for (int d4 = 0; d4 < dim4; ++d4) {
+      acc4[d4] += gl * *(device const float4*)(query + qb + d4 * 4);
+    }
+    for (int r = 0; r < rem; ++r) {
+      acc_rem[r] += gl * query[qb + dim4 * 4 + r];
+    }
+  }
+  float scale = p.SCALE;
+  for (int d4 = 0; d4 < dim4; ++d4) {
+    float4 v = acc4[d4] * scale;
+    grad_k[k_base + d4 * 4 + 0] = (T)v.x;
+    grad_k[k_base + d4 * 4 + 1] = (T)v.y;
+    grad_k[k_base + d4 * 4 + 2] = (T)v.z;
+    grad_k[k_base + d4 * 4 + 3] = (T)v.w;
+  }
+  for (int r = 0; r < rem; ++r) {
+    grad_k[k_base + dim4 * 4 + r] = (T)(acc_rem[r] * scale);
   }
 }
 
 // ======================================================================
-// 3D Backward — grad_v (direct nonatomic)
+// 3D Backward — grad_v (vec4, contributor-outer D-inner)
 // Thread grid: (IW, IH, B*H*ID)
 // ======================================================================
 
@@ -718,81 +748,107 @@ template <typename T>
   int K3 = K * K * K;
   int nh = K / 2;
   int v_base = sf_base_3d(b, h, vd, vh, vw, p.ID, p.IH, p.IW, p.H, p.D);
+  int dim4 = p.D / 4;
+  int rem = p.D - dim4 * 4;
 
-  for (int d = 0; d < p.D; ++d) {
-    float acc = 0.0f;
+  // Precompute contributing queries (D-independent inverse mapping)
+  int a_indices[512];
+  int go_bases[512];
+  int contrib_count = 0;
 
-    for (int od = 0; od < out_d; ++od) {
-      int qd = od * p.SD;
-      if (qd >= p.ID) continue;
+  for (int od = 0; od < out_d; ++od) {
+    int qd = od * p.SD;
+    if (qd >= p.ID) continue;
 
-      int nd = p.CD ? 0 : natten_window_start_3d(qd, p.ID, K, nh, p.DD);
-      int kd_offset = -1;
-      if (p.CD) {
-        int diff = qd - vd;
-        if (diff >= 0 && diff % p.DD == 0) {
-          int ki = (K - 1) - diff / p.DD;
-          if (ki >= 0 && ki < K) kd_offset = ki;
-        }
-      } else {
-        int diff = vd - nd;
-        if (diff >= 0 && diff % p.DD == 0) {
-          int ki = diff / p.DD;
-          if (ki >= 0 && ki < K) kd_offset = ki;
-        }
+    int nd = p.CD ? 0 : natten_window_start_3d(qd, p.ID, K, nh, p.DD);
+    int kd_offset = -1;
+    if (p.CD) {
+      int diff = qd - vd;
+      if (diff >= 0 && diff % p.DD == 0) {
+        int ki = (K - 1) - diff / p.DD;
+        if (ki >= 0 && ki < K) kd_offset = ki;
       }
-      if (kd_offset < 0) continue;
-
-      for (int oh = 0; oh < out_h; ++oh) {
-        int qh = oh * p.SH;
-        if (qh >= p.IH) continue;
-
-        int nh_start = p.CH ? 0 : natten_window_start_3d(qh, p.IH, K, nh, p.DH);
-        int kh_offset = -1;
-        if (p.CH) {
-          int diff = qh - vh;
-          if (diff >= 0 && diff % p.DH == 0) {
-            int ki = (K - 1) - diff / p.DH;
-            if (ki >= 0 && ki < K) kh_offset = ki;
-          }
-        } else {
-          int diff = vh - nh_start;
-          if (diff >= 0 && diff % p.DH == 0) {
-            int ki = diff / p.DH;
-            if (ki >= 0 && ki < K) kh_offset = ki;
-          }
-        }
-        if (kh_offset < 0) continue;
-
-        for (int ow = 0; ow < out_w; ++ow) {
-          int qw = ow * p.SW;
-          if (qw >= p.IW) continue;
-
-          int nw = p.CW ? 0 : natten_window_start_3d(qw, p.IW, K, nh, p.DW);
-          int kw_offset = -1;
-          if (p.CW) {
-            int diff = qw - vw;
-            if (diff >= 0 && diff % p.DW == 0) {
-              int ki = (K - 1) - diff / p.DW;
-              if (ki >= 0 && ki < K) kw_offset = ki;
-            }
-          } else {
-            int diff = vw - nw;
-            if (diff >= 0 && diff % p.DW == 0) {
-              int ki = diff / p.DW;
-              if (ki >= 0 && ki < K) kw_offset = ki;
-            }
-          }
-          if (kw_offset < 0) continue;
-
-          int kpos = (kd_offset * K + kh_offset) * K + kw_offset;
-          int a_idx = (((((b * out_d + od) * out_h + oh) * out_w + ow) * p.H + h) * K3) + kpos;
-          int go_idx = sf_base_3d(b, h, od, oh, ow, out_d, out_h, out_w, p.H, p.D) + d;
-          acc += attn[a_idx] * (float)grad_out[go_idx];
-        }
+    } else {
+      int diff = vd - nd;
+      if (diff >= 0 && diff % p.DD == 0) {
+        int ki = diff / p.DD;
+        if (ki >= 0 && ki < K) kd_offset = ki;
       }
     }
-    grad_v[v_base + d] = (T)acc;
+    if (kd_offset < 0) continue;
+
+    for (int oh = 0; oh < out_h; ++oh) {
+      int qh = oh * p.SH;
+      if (qh >= p.IH) continue;
+
+      int nh_start = p.CH ? 0 : natten_window_start_3d(qh, p.IH, K, nh, p.DH);
+      int kh_offset = -1;
+      if (p.CH) {
+        int diff = qh - vh;
+        if (diff >= 0 && diff % p.DH == 0) {
+          int ki = (K - 1) - diff / p.DH;
+          if (ki >= 0 && ki < K) kh_offset = ki;
+        }
+      } else {
+        int diff = vh - nh_start;
+        if (diff >= 0 && diff % p.DH == 0) {
+          int ki = diff / p.DH;
+          if (ki >= 0 && ki < K) kh_offset = ki;
+        }
+      }
+      if (kh_offset < 0) continue;
+
+      for (int ow = 0; ow < out_w && contrib_count < 512; ++ow) {
+        int qw = ow * p.SW;
+        if (qw >= p.IW) continue;
+
+        int nw = p.CW ? 0 : natten_window_start_3d(qw, p.IW, K, nh, p.DW);
+        int kw_offset = -1;
+        if (p.CW) {
+          int diff = qw - vw;
+          if (diff >= 0 && diff % p.DW == 0) {
+            int ki = (K - 1) - diff / p.DW;
+            if (ki >= 0 && ki < K) kw_offset = ki;
+          }
+        } else {
+          int diff = vw - nw;
+          if (diff >= 0 && diff % p.DW == 0) {
+            int ki = diff / p.DW;
+            if (ki >= 0 && ki < K) kw_offset = ki;
+          }
+        }
+        if (kw_offset < 0) continue;
+
+        int kpos = (kd_offset * K + kh_offset) * K + kw_offset;
+        a_indices[contrib_count] = (((((b * out_d + od) * out_h + oh) * out_w + ow) * p.H + h) * K3) + kpos;
+        go_bases[contrib_count] = sf_base_3d(b, h, od, oh, ow, out_d, out_h, out_w, p.H, p.D);
+        contrib_count++;
+      }
+    }
+  }
+
+  // Contributor-outer, D-inner with vec4 + scalar remainder
+  float4 acc4[16] = {};
+  float acc_rem[4] = {};
+  for (int c = 0; c < contrib_count; ++c) {
+    float a = attn[a_indices[c]];
+    int gob = go_bases[c];
+    for (int d4 = 0; d4 < dim4; ++d4) {
+      acc4[d4] += a * float4(*(device const float4*)(grad_out + gob + d4 * 4));
+    }
+    for (int r = 0; r < rem; ++r) {
+      acc_rem[r] += a * float(grad_out[gob + dim4 * 4 + r]);
+    }
+  }
+  for (int d4 = 0; d4 < dim4; ++d4) {
+    float4 v = acc4[d4];
+    grad_v[v_base + d4 * 4 + 0] = (T)v.x;
+    grad_v[v_base + d4 * 4 + 1] = (T)v.y;
+    grad_v[v_base + d4 * 4 + 2] = (T)v.z;
+    grad_v[v_base + d4 * 4 + 3] = (T)v.w;
+  }
+  for (int r = 0; r < rem; ++r) {
+    grad_v[v_base + dim4 * 4 + r] = (T)acc_rem[r];
   }
 }
 

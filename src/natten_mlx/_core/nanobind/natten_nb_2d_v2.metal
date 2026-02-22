@@ -117,9 +117,9 @@ template <typename T>
     ej = natten_window_end(nj, p.IW, K, p.DW);
   }
 
-  // Pass 1: compute scores, find max
+  // Pass 1: compute scores, find max, store base addresses
   float logits[169];  // max K=13 -> 169 neighbors
-  int key_lin[169];
+  int key_base[169];  // precomputed linear base addresses
   float max_logit = -INFINITY;
   int n_idx = 0;
 
@@ -135,25 +135,24 @@ template <typename T>
                           : (key_j >= 0 && key_j < ej);
 
       float score = -INFINITY;
-      int kl = -1;
+      int kb = -1;
       if (valid_i && valid_j) {
-        kl = key_i * p.IW + key_j;
-        int k_base = sf_base_2d(b, h, key_i, key_j, p.IH, p.IW, p.H, p.D);
+        kb = sf_base_2d(b, h, key_i, key_j, p.IH, p.IW, p.H, p.D);
         float acc = 0.0f;
         for (int d = 0; d < p.D; ++d) {
-          acc += (float)query[q_base + d] * (float)key[k_base + d];
+          acc += (float)query[q_base + d] * (float)key[kb + d];
         }
         score = acc * p.SCALE;
       }
 
       logits[n_idx] = score;
-      key_lin[n_idx] = kl;
+      key_base[n_idx] = kb;
       max_logit = max(max_logit, score);
       n_idx++;
     }
   }
 
-  // Pass 2: softmax denominator
+  // Pass 2: softmax
   float denom = 0.0f;
   for (int n = 0; n < K2; ++n) {
     logits[n] = exp(logits[n] - max_logit);
@@ -161,18 +160,14 @@ template <typename T>
   }
   float inv_denom = denom > 0.0f ? (1.0f / denom) : 0.0f;
 
-  // Pass 3: weighted value aggregation
+  // Pass 3: weighted value aggregation (precomputed base addresses)
   int out_base = sf_base_2d(b, h, i_out, j_out, out_h, out_w, p.H, p.D);
   for (int d = 0; d < p.D; ++d) {
     float acc = 0.0f;
     for (int n = 0; n < K2; ++n) {
-      if (key_lin[n] >= 0) {
+      if (key_base[n] >= 0) {
         float w = logits[n] * inv_denom;
-        int kl = key_lin[n];
-        int ki = kl / p.IW;
-        int kj = kl - ki * p.IW;
-        int v_idx = sf_base_2d(b, h, ki, kj, p.IH, p.IW, p.H, p.D) + d;
-        acc += w * (float)value[v_idx];
+        acc += w * (float)value[key_base[n] + d];
       }
     }
     out[out_base + d] = (T)acc;
@@ -224,7 +219,7 @@ template <typename T, typename T4>
   }
 
   float logits[169];
-  int key_lin[169];
+  int key_base[169];  // precomputed linear base addresses
   float max_logit = -INFINITY;
   int n_idx = 0;
 
@@ -240,21 +235,20 @@ template <typename T, typename T4>
                           : (key_j >= 0 && key_j < ej);
 
       float score = -INFINITY;
-      int kl = -1;
+      int kb = -1;
       if (valid_i && valid_j) {
-        kl = key_i * p.IW + key_j;
-        int k_base = sf_base_2d(b, h, key_i, key_j, p.IH, p.IW, p.H, p.D);
+        kb = sf_base_2d(b, h, key_i, key_j, p.IH, p.IW, p.H, p.D);
         float acc = 0.0f;
         for (int d4 = 0; d4 < dim4; ++d4) {
           const device T4* q4 = reinterpret_cast<const device T4*>(query + q_base + d4 * 4);
-          const device T4* k4 = reinterpret_cast<const device T4*>(key + k_base + d4 * 4);
+          const device T4* k4 = reinterpret_cast<const device T4*>(key + kb + d4 * 4);
           acc += dot(float4(*q4), float4(*k4));
         }
         score = acc * p.SCALE;
       }
 
       logits[n_idx] = score;
-      key_lin[n_idx] = kl;
+      key_base[n_idx] = kb;
       max_logit = max(max_logit, score);
       n_idx++;
     }
@@ -268,18 +262,14 @@ template <typename T, typename T4>
   }
   float inv_denom = denom > 0.0f ? (1.0f / denom) : 0.0f;
 
-  // Weighted value aggregation (vec4)
+  // Weighted value aggregation (vec4, precomputed base addresses)
   int out_base = sf_base_2d(b, h, i_out, j_out, out_h, out_w, p.H, p.D);
   for (int d4 = 0; d4 < dim4; ++d4) {
     float4 acc = float4(0.0f);
     for (int n = 0; n < K2; ++n) {
-      if (key_lin[n] >= 0) {
+      if (key_base[n] >= 0) {
         float w = logits[n] * inv_denom;
-        int kl = key_lin[n];
-        int ki = kl / p.IW;
-        int kj = kl - ki * p.IW;
-        int v_base = sf_base_2d(b, h, ki, kj, p.IH, p.IW, p.H, p.D) + d4 * 4;
-        const device T4* v4 = reinterpret_cast<const device T4*>(value + v_base);
+        const device T4* v4 = reinterpret_cast<const device T4*>(value + key_base[n] + d4 * 4);
         acc += w * float4(*v4);
       }
     }
@@ -761,7 +751,7 @@ template <typename T, typename T4>
 }
 
 // ======================================================================
-// 2D Backward — grad_q
+// 2D Backward — grad_q (vec4, K-outer D-inner)
 // Thread grid: (IW, IH, B*H) — one thread per spatial position
 // ======================================================================
 
@@ -785,6 +775,8 @@ template <typename T>
   int K = has_fc_k ? FC_K : p.K;
   int K2 = K * K;
   int nh = K / 2;
+  int dim4 = p.D / 4;
+  int rem = p.D - dim4 * 4;
 
   int base = sf_base_2d(b, h, ih, iw, p.IH, p.IW, p.H, p.D);
 
@@ -806,29 +798,43 @@ template <typename T>
 
   int gl_base = ((((b * out_h + oh) * out_w + ow) * p.H + h) * K2);
 
-  for (int d = 0; d < p.D; ++d) {
-    float acc = 0.0f;
-    for (int ki = 0; ki < K; ++ki) {
-      int key_i = p.CH ? (ih - (K - 1 - ki) * p.DH) : (ni + ki * p.DH);
-      if (key_i < 0 || key_i >= p.IH) continue;
-      if (p.CH && key_i > ih) continue;
-      for (int kj = 0; kj < K; ++kj) {
-        int key_j = p.CW ? (iw - (K - 1 - kj) * p.DW) : (nj + kj * p.DW);
-        if (key_j < 0 || key_j >= p.IW) continue;
-        if (p.CW && key_j > iw) continue;
-        float gl = grad_logits[gl_base + ki * K + kj];
-        int k_idx = sf_base_2d(b, h, key_i, key_j, p.IH, p.IW, p.H, p.D) + d;
-        acc += gl * key[k_idx];
+  // K-outer, D-inner with vec4 + scalar remainder
+  float4 acc4[16] = {};
+  float acc_rem[4] = {};
+  for (int ki = 0; ki < K; ++ki) {
+    int key_i = p.CH ? (ih - (K - 1 - ki) * p.DH) : (ni + ki * p.DH);
+    if (key_i < 0 || key_i >= p.IH) continue;
+    if (p.CH && key_i > ih) continue;
+    for (int kj = 0; kj < K; ++kj) {
+      int key_j = p.CW ? (iw - (K - 1 - kj) * p.DW) : (nj + kj * p.DW);
+      if (key_j < 0 || key_j >= p.IW) continue;
+      if (p.CW && key_j > iw) continue;
+      float gl = grad_logits[gl_base + ki * K + kj];
+      int k_start = sf_base_2d(b, h, key_i, key_j, p.IH, p.IW, p.H, p.D);
+      for (int d4 = 0; d4 < dim4; ++d4) {
+        acc4[d4] += gl * *(device const float4*)(key + k_start + d4 * 4);
+      }
+      for (int r = 0; r < rem; ++r) {
+        acc_rem[r] += gl * key[k_start + dim4 * 4 + r];
       }
     }
-    grad_q[base + d] = (T)(acc * p.SCALE);
+  }
+  float scale = p.SCALE;
+  for (int d4 = 0; d4 < dim4; ++d4) {
+    float4 v = acc4[d4] * scale;
+    grad_q[base + d4 * 4 + 0] = (T)v.x;
+    grad_q[base + d4 * 4 + 1] = (T)v.y;
+    grad_q[base + d4 * 4 + 2] = (T)v.z;
+    grad_q[base + d4 * 4 + 3] = (T)v.w;
+  }
+  for (int r = 0; r < rem; ++r) {
+    grad_q[base + dim4 * 4 + r] = (T)(acc_rem[r] * scale);
   }
 }
 
 // ======================================================================
-// 2D Backward — grad_k (direct nonatomic)
+// 2D Backward — grad_k (vec4, contributor-outer D-inner)
 // Thread grid: (IW, IH, B*H) — one thread per key position
-// For each key position, find all query positions that have it in their window.
 // ======================================================================
 
 template <typename T>
@@ -852,64 +858,91 @@ template <typename T>
   int K2 = K * K;
   int nh = K / 2;
   int k_base = sf_base_2d(b, h, kh, kw, p.IH, p.IW, p.H, p.D);
+  int dim4 = p.D / 4;
+  int rem = p.D - dim4 * 4;
 
-  for (int d = 0; d < p.D; ++d) {
-    float acc = 0.0f;
+  // Precompute contributing queries (D-independent inverse mapping)
+  int gl_indices[256];
+  int q_bases[256];
+  int contrib_count = 0;
 
-    for (int oh = 0; oh < out_h; ++oh) {
-      int qi = oh * p.SH;
-      if (qi >= p.IH) continue;
+  for (int oh = 0; oh < out_h; ++oh) {
+    int qi = oh * p.SH;
+    if (qi >= p.IH) continue;
 
-      int ni_h = p.CH ? 0 : natten_window_start(qi, p.IH, K, nh, p.DH);
-      int kh_offset = -1;
-      if (p.CH) {
-        int diff = qi - kh;
-        if (diff >= 0 && diff % p.DH == 0) {
-          int ki = (K - 1) - diff / p.DH;
-          if (ki >= 0 && ki < K) kh_offset = ki;
-        }
-      } else {
-        int diff = kh - ni_h;
-        if (diff >= 0 && diff % p.DH == 0) {
-          int ki = diff / p.DH;
-          if (ki >= 0 && ki < K) kh_offset = ki;
-        }
+    int ni_h = p.CH ? 0 : natten_window_start(qi, p.IH, K, nh, p.DH);
+    int kh_offset = -1;
+    if (p.CH) {
+      int diff = qi - kh;
+      if (diff >= 0 && diff % p.DH == 0) {
+        int ki = (K - 1) - diff / p.DH;
+        if (ki >= 0 && ki < K) kh_offset = ki;
       }
-      if (kh_offset < 0) continue;
-
-      for (int ow = 0; ow < out_w; ++ow) {
-        int qj = ow * p.SW;
-        if (qj >= p.IW) continue;
-
-        int nj_w = p.CW ? 0 : natten_window_start(qj, p.IW, K, nh, p.DW);
-        int kw_offset = -1;
-        if (p.CW) {
-          int diff = qj - kw;
-          if (diff >= 0 && diff % p.DW == 0) {
-            int kj = (K - 1) - diff / p.DW;
-            if (kj >= 0 && kj < K) kw_offset = kj;
-          }
-        } else {
-          int diff = kw - nj_w;
-          if (diff >= 0 && diff % p.DW == 0) {
-            int kj = diff / p.DW;
-            if (kj >= 0 && kj < K) kw_offset = kj;
-          }
-        }
-        if (kw_offset < 0) continue;
-
-        int kpos = kh_offset * K + kw_offset;
-        int gl_idx = ((((b * out_h + oh) * out_w + ow) * p.H + h) * K2) + kpos;
-        int q_idx = sf_base_2d(b, h, qi, qj, p.IH, p.IW, p.H, p.D) + d;
-        acc += grad_logits[gl_idx] * query[q_idx];
+    } else {
+      int diff = kh - ni_h;
+      if (diff >= 0 && diff % p.DH == 0) {
+        int ki = diff / p.DH;
+        if (ki >= 0 && ki < K) kh_offset = ki;
       }
     }
-    grad_k[k_base + d] = (T)(acc * p.SCALE);
+    if (kh_offset < 0) continue;
+
+    for (int ow = 0; ow < out_w && contrib_count < 256; ++ow) {
+      int qj = ow * p.SW;
+      if (qj >= p.IW) continue;
+
+      int nj_w = p.CW ? 0 : natten_window_start(qj, p.IW, K, nh, p.DW);
+      int kw_offset = -1;
+      if (p.CW) {
+        int diff = qj - kw;
+        if (diff >= 0 && diff % p.DW == 0) {
+          int kj = (K - 1) - diff / p.DW;
+          if (kj >= 0 && kj < K) kw_offset = kj;
+        }
+      } else {
+        int diff = kw - nj_w;
+        if (diff >= 0 && diff % p.DW == 0) {
+          int kj = diff / p.DW;
+          if (kj >= 0 && kj < K) kw_offset = kj;
+        }
+      }
+      if (kw_offset < 0) continue;
+
+      int kpos = kh_offset * K + kw_offset;
+      gl_indices[contrib_count] = ((((b * out_h + oh) * out_w + ow) * p.H + h) * K2) + kpos;
+      q_bases[contrib_count] = sf_base_2d(b, h, qi, qj, p.IH, p.IW, p.H, p.D);
+      contrib_count++;
+    }
+  }
+
+  // Contributor-outer, D-inner with vec4 + scalar remainder
+  float4 acc4[16] = {};
+  float acc_rem[4] = {};
+  for (int c = 0; c < contrib_count; ++c) {
+    float gl = grad_logits[gl_indices[c]];
+    int qb = q_bases[c];
+    for (int d4 = 0; d4 < dim4; ++d4) {
+      acc4[d4] += gl * *(device const float4*)(query + qb + d4 * 4);
+    }
+    for (int r = 0; r < rem; ++r) {
+      acc_rem[r] += gl * query[qb + dim4 * 4 + r];
+    }
+  }
+  float scale = p.SCALE;
+  for (int d4 = 0; d4 < dim4; ++d4) {
+    float4 v = acc4[d4] * scale;
+    grad_k[k_base + d4 * 4 + 0] = (T)v.x;
+    grad_k[k_base + d4 * 4 + 1] = (T)v.y;
+    grad_k[k_base + d4 * 4 + 2] = (T)v.z;
+    grad_k[k_base + d4 * 4 + 3] = (T)v.w;
+  }
+  for (int r = 0; r < rem; ++r) {
+    grad_k[k_base + dim4 * 4 + r] = (T)(acc_rem[r] * scale);
   }
 }
 
 // ======================================================================
-// 2D Backward — grad_v (direct nonatomic)
+// 2D Backward — grad_v (vec4, contributor-outer D-inner)
 // Thread grid: (IW, IH, B*H) — one thread per value position
 // ======================================================================
 
@@ -934,59 +967,85 @@ template <typename T>
   int K2 = K * K;
   int nh = K / 2;
   int v_base = sf_base_2d(b, h, vh, vw, p.IH, p.IW, p.H, p.D);
+  int dim4 = p.D / 4;
+  int rem = p.D - dim4 * 4;
 
-  for (int d = 0; d < p.D; ++d) {
-    float acc = 0.0f;
+  // Precompute contributing queries (D-independent inverse mapping)
+  int a_indices[256];
+  int go_bases[256];
+  int contrib_count = 0;
 
-    for (int oh = 0; oh < out_h; ++oh) {
-      int qi = oh * p.SH;
-      if (qi >= p.IH) continue;
+  for (int oh = 0; oh < out_h; ++oh) {
+    int qi = oh * p.SH;
+    if (qi >= p.IH) continue;
 
-      int ni_h = p.CH ? 0 : natten_window_start(qi, p.IH, K, nh, p.DH);
-      int kh_offset = -1;
-      if (p.CH) {
-        int diff = qi - vh;
-        if (diff >= 0 && diff % p.DH == 0) {
-          int ki = (K - 1) - diff / p.DH;
-          if (ki >= 0 && ki < K) kh_offset = ki;
-        }
-      } else {
-        int diff = vh - ni_h;
-        if (diff >= 0 && diff % p.DH == 0) {
-          int ki = diff / p.DH;
-          if (ki >= 0 && ki < K) kh_offset = ki;
-        }
+    int ni_h = p.CH ? 0 : natten_window_start(qi, p.IH, K, nh, p.DH);
+    int kh_offset = -1;
+    if (p.CH) {
+      int diff = qi - vh;
+      if (diff >= 0 && diff % p.DH == 0) {
+        int ki = (K - 1) - diff / p.DH;
+        if (ki >= 0 && ki < K) kh_offset = ki;
       }
-      if (kh_offset < 0) continue;
-
-      for (int ow = 0; ow < out_w; ++ow) {
-        int qj = ow * p.SW;
-        if (qj >= p.IW) continue;
-
-        int nj_w = p.CW ? 0 : natten_window_start(qj, p.IW, K, nh, p.DW);
-        int kw_offset = -1;
-        if (p.CW) {
-          int diff = qj - vw;
-          if (diff >= 0 && diff % p.DW == 0) {
-            int kj = (K - 1) - diff / p.DW;
-            if (kj >= 0 && kj < K) kw_offset = kj;
-          }
-        } else {
-          int diff = vw - nj_w;
-          if (diff >= 0 && diff % p.DW == 0) {
-            int kj = diff / p.DW;
-            if (kj >= 0 && kj < K) kw_offset = kj;
-          }
-        }
-        if (kw_offset < 0) continue;
-
-        int kpos = kh_offset * K + kw_offset;
-        int a_idx = ((((b * out_h + oh) * out_w + ow) * p.H + h) * K2) + kpos;
-        int go_idx = sf_base_2d(b, h, oh, ow, out_h, out_w, p.H, p.D) + d;
-        acc += attn[a_idx] * (float)grad_out[go_idx];
+    } else {
+      int diff = vh - ni_h;
+      if (diff >= 0 && diff % p.DH == 0) {
+        int ki = diff / p.DH;
+        if (ki >= 0 && ki < K) kh_offset = ki;
       }
     }
-    grad_v[v_base + d] = (T)acc;
+    if (kh_offset < 0) continue;
+
+    for (int ow = 0; ow < out_w && contrib_count < 256; ++ow) {
+      int qj = ow * p.SW;
+      if (qj >= p.IW) continue;
+
+      int nj_w = p.CW ? 0 : natten_window_start(qj, p.IW, K, nh, p.DW);
+      int kw_offset = -1;
+      if (p.CW) {
+        int diff = qj - vw;
+        if (diff >= 0 && diff % p.DW == 0) {
+          int kj = (K - 1) - diff / p.DW;
+          if (kj >= 0 && kj < K) kw_offset = kj;
+        }
+      } else {
+        int diff = vw - nj_w;
+        if (diff >= 0 && diff % p.DW == 0) {
+          int kj = diff / p.DW;
+          if (kj >= 0 && kj < K) kw_offset = kj;
+        }
+      }
+      if (kw_offset < 0) continue;
+
+      int kpos = kh_offset * K + kw_offset;
+      a_indices[contrib_count] = ((((b * out_h + oh) * out_w + ow) * p.H + h) * K2) + kpos;
+      go_bases[contrib_count] = sf_base_2d(b, h, oh, ow, out_h, out_w, p.H, p.D);
+      contrib_count++;
+    }
+  }
+
+  // Contributor-outer, D-inner with vec4 + scalar remainder
+  float4 acc4[16] = {};
+  float acc_rem[4] = {};
+  for (int c = 0; c < contrib_count; ++c) {
+    float a = attn[a_indices[c]];
+    int gob = go_bases[c];
+    for (int d4 = 0; d4 < dim4; ++d4) {
+      acc4[d4] += a * float4(*(device const float4*)(grad_out + gob + d4 * 4));
+    }
+    for (int r = 0; r < rem; ++r) {
+      acc_rem[r] += a * float(grad_out[gob + dim4 * 4 + r]);
+    }
+  }
+  for (int d4 = 0; d4 < dim4; ++d4) {
+    float4 v = acc4[d4];
+    grad_v[v_base + d4 * 4 + 0] = (T)v.x;
+    grad_v[v_base + d4 * 4 + 1] = (T)v.y;
+    grad_v[v_base + d4 * 4 + 2] = (T)v.z;
+    grad_v[v_base + d4 * 4 + 3] = (T)v.w;
+  }
+  for (int r = 0; r < rem; ++r) {
+    grad_v[v_base + dim4 * 4 + r] = (T)acc_rem[r];
   }
 }
 
