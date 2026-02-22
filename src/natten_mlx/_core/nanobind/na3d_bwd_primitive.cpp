@@ -63,20 +63,23 @@ std::string v2_3d_bwd_dir() {
   return dir;
 }
 
-MTL::ComputePipelineState* get_3d_bwd_kernel(const std::string& name) {
+MTL::ComputePipelineState* get_3d_bwd_kernel(const std::string& name, int kernel_size) {
+  std::string cache_key = name + "_k" + std::to_string(kernel_size);
   {
     std::lock_guard<std::mutex> lock(v2_3d_bwd_mutex());
-    auto it = v2_3d_bwd_cache().find(name);
+    auto it = v2_3d_bwd_cache().find(cache_key);
     if (it != v2_3d_bwd_cache().end()) return it->second;
   }
   auto& dev = mx::metal::device(mx::Device::gpu);
   auto* lib = dev.get_library("natten_nb", v2_3d_bwd_dir());
   if (!lib) throw std::runtime_error("Failed to load natten_nb metallib");
-  auto* k = dev.get_kernel(name, lib);
+  mx::metal::MTLFCList fc = {
+      {&kernel_size, MTL::DataType::DataTypeInt, 0}};
+  auto* k = dev.get_kernel(name, lib, cache_key, fc);
   if (!k) throw std::runtime_error("Failed to resolve 3D bwd kernel: " + name);
   {
     std::lock_guard<std::mutex> lock(v2_3d_bwd_mutex());
-    v2_3d_bwd_cache()[name] = k;
+    v2_3d_bwd_cache()[cache_key] = k;
   }
   return k;
 }
@@ -122,7 +125,7 @@ void NA3DBwdAttn::eval_gpu(
   outputs[0].set_data(mx::allocator::malloc(out_bytes));
   outputs[1].set_data(mx::allocator::malloc(out_bytes));
 
-  auto* kernel_fn = get_3d_bwd_kernel(kname);
+  auto* kernel_fn = get_3d_bwd_kernel(kname, kernel_size_);
   auto& dev = mx::metal::device(mx::Device::gpu);
   auto& enc = dev.get_command_encoder(stream().index);
 
@@ -163,7 +166,7 @@ void NA3DBwdGradQ::eval_gpu(
   size_t out_bytes = static_cast<size_t>(B) * ID * IH * IW * H * D * mx::size_of(out_dtype_);
   outputs[0].set_data(mx::allocator::malloc(out_bytes));
 
-  auto* kernel_fn = get_3d_bwd_kernel(kname);
+  auto* kernel_fn = get_3d_bwd_kernel(kname, kernel_size_);
   auto& dev = mx::metal::device(mx::Device::gpu);
   auto& enc = dev.get_command_encoder(stream().index);
 
@@ -201,7 +204,7 @@ void NA3DBwdGradK::eval_gpu(
   size_t out_bytes = static_cast<size_t>(B) * ID * IH * IW * H * D * mx::size_of(out_dtype_);
   outputs[0].set_data(mx::allocator::malloc(out_bytes));
 
-  auto* kernel_fn = get_3d_bwd_kernel(kname);
+  auto* kernel_fn = get_3d_bwd_kernel(kname, kernel_size_);
   auto& dev = mx::metal::device(mx::Device::gpu);
   auto& enc = dev.get_command_encoder(stream().index);
 
@@ -242,7 +245,7 @@ void NA3DBwdGradV::eval_gpu(
   size_t out_bytes = static_cast<size_t>(B) * ID_ * IH_ * IW_ * H * D * mx::size_of(out_dtype_);
   outputs[0].set_data(mx::allocator::malloc(out_bytes));
 
-  auto* kernel_fn = get_3d_bwd_kernel(kname);
+  auto* kernel_fn = get_3d_bwd_kernel(kname, kernel_size_);
   auto& dev = mx::metal::device(mx::Device::gpu);
   auto& enc = dev.get_command_encoder(stream().index);
 
@@ -303,7 +306,7 @@ std::vector<mx::array> na3d_backward_v2(
     goc = mx::astype(goc, compute_dtype, stream);
   }
 
-  // Stage 1: fused attn recompute + grad_attn
+  // Stage 1: fused attn recompute + grad_logits
   auto attn_prim = std::make_shared<NA3DBwdAttn>(
       stream, kernel_size,
       stride_d, stride_h, stride_w,
@@ -317,13 +320,7 @@ std::vector<mx::array> na3d_backward_v2(
       std::move(attn_prim),
       {qc, kc, vc, goc});
   auto attn = outputs_attn[0];
-  auto grad_attn = outputs_attn[1];
-
-  // Stage 2: softmax backward via MLX ops
-  auto prod = mx::multiply(attn, grad_attn, stream);
-  auto inner = mx::sum(prod, -1, true, stream);
-  auto centered = mx::subtract(grad_attn, inner, stream);
-  auto grad_logits = mx::multiply(attn, centered, stream);
+  auto grad_logits = outputs_attn[1];
 
   // Stage 3: grad_q and grad_k
   auto kf = (kc.dtype() == mx::float32) ? kc : mx::astype(kc, mx::float32, stream);

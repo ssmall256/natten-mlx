@@ -10,6 +10,10 @@
 
 using namespace metal;
 
+// Function constant for compile-time K specialization (loop unrolling)
+constant int FC_K [[function_constant(0)]];
+constant bool has_fc_k = is_function_constant_defined(FC_K);
+
 // ---- Parameter struct ----
 // Inputs in [B, IH, IW, H, D] layout (spatial-first, MLX default).
 struct NA2DParams {
@@ -97,7 +101,7 @@ template <typename T>
   int j = j_out * p.SW;
   if (i >= p.IH || j >= p.IW) return;
 
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int nh = K / 2;
   int K2 = K * K;
 
@@ -202,7 +206,7 @@ template <typename T, typename T4>
   int j = j_out * p.SW;
   if (i >= p.IH || j >= p.IW) return;
 
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int nh = K / 2;
   int K2 = K * K;
   int dim4 = p.D / 4;
@@ -285,7 +289,7 @@ template <typename T, typename T4>
 }
 
 // ======================================================================
-// 2D Split QK Forward — spatial-first, 3D grid
+// 2D Split QK Forward — spatial-first, 3D grid (K², out_w, out_h * B * H)
 // ======================================================================
 
 template <typename T>
@@ -294,56 +298,57 @@ template <typename T>
     device const T* key [[buffer(1)]],
     device T* out [[buffer(2)]],
     constant NA2DParams& p [[buffer(3)]],
-    uint tid [[thread_position_in_grid]]) {
+    uint3 gid [[thread_position_in_grid]]) {
 
+  int K = has_fc_k ? FC_K : p.K;
+  int K2 = K * K;
   int out_h = (p.IH + p.SH - 1) / p.SH;
   int out_w = (p.IW + p.SW - 1) / p.SW;
-  int K2 = p.K * p.K;
-  int idx = (int)tid;
-  int total = p.B * out_h * out_w * p.H * K2;
-  if (idx >= total) return;
 
-  // Decompose: idx -> (b, oh, ow, h, kpos)
-  int kpos = idx % K2;
-  int kh = kpos / p.K;
-  int kw = kpos % p.K;
-  int t = idx / K2;
-  int h = t % p.H;
-  t /= p.H;
-  int ow = t % out_w;
-  t /= out_w;
-  int oh = t % out_h;
-  int b = t / out_h;
+  int kpos = (int)gid.x;
+  int ow = (int)gid.y;
+  int z = (int)gid.z;
+  if (kpos >= K2 || ow >= out_w) return;
+
+  int oh = z % out_h;
+  int bh = z / out_h;
+  if (bh >= p.B * p.H) return;
+  int b = bh / p.H;
+  int h = bh - b * p.H;
+
+  int kh = kpos / K;
+  int kw = kpos % K;
 
   int qi = oh * p.SH;
   int qj = ow * p.SW;
+
+  int out_idx = ((((b * out_h + oh) * out_w + ow) * p.H + h) * K2 + kpos);
   if (qi >= p.IH || qj >= p.IW) {
-    out[idx] = (T)(-INFINITY);
+    out[out_idx] = (T)(-INFINITY);
     return;
   }
 
-  int nh = p.K / 2;
-  int h_start = p.CH ? 0 : natten_window_start(qi, p.IH, p.K, nh, p.DH);
-  int w_start = p.CW ? 0 : natten_window_start(qj, p.IW, p.K, nh, p.DW);
-  int ih = p.CH ? (qi - (p.K - 1 - kh) * p.DH) : (h_start + kh * p.DH);
-  int iw = p.CW ? (qj - (p.K - 1 - kw) * p.DW) : (w_start + kw * p.DW);
+  int nh = K / 2;
+  int h_start = p.CH ? 0 : natten_window_start(qi, p.IH, K, nh, p.DH);
+  int w_start = p.CW ? 0 : natten_window_start(qj, p.IW, K, nh, p.DW);
+  int ih = p.CH ? (qi - (K - 1 - kh) * p.DH) : (h_start + kh * p.DH);
+  int iw = p.CW ? (qj - (K - 1 - kw) * p.DW) : (w_start + kw * p.DW);
   if (ih < 0 || ih >= p.IH || iw < 0 || iw >= p.IW) {
-    out[idx] = (T)(-INFINITY);
+    out[out_idx] = (T)(-INFINITY);
     return;
   }
 
-  // Spatial-first dot product
   int q_base = sf_base_2d(b, h, qi, qj, p.IH, p.IW, p.H, p.D);
   int k_base = sf_base_2d(b, h, ih, iw, p.IH, p.IW, p.H, p.D);
   float acc = 0.0f;
   for (int d = 0; d < p.D; ++d) {
     acc += (float)query[q_base + d] * (float)key[k_base + d];
   }
-  out[idx] = (T)(acc * p.SCALE);
+  out[out_idx] = (T)(acc * p.SCALE);
 }
 
 // ======================================================================
-// 2D Split QK Forward — vec4 variant
+// 2D Split QK Forward — vec4 variant, 3D grid (K², out_w, out_h * B * H)
 // ======================================================================
 
 template <typename T, typename T4>
@@ -352,40 +357,43 @@ template <typename T, typename T4>
     device const T* key [[buffer(1)]],
     device T* out [[buffer(2)]],
     constant NA2DParams& p [[buffer(3)]],
-    uint tid [[thread_position_in_grid]]) {
+    uint3 gid [[thread_position_in_grid]]) {
 
+  int K = has_fc_k ? FC_K : p.K;
+  int K2 = K * K;
   int out_h = (p.IH + p.SH - 1) / p.SH;
   int out_w = (p.IW + p.SW - 1) / p.SW;
-  int K2 = p.K * p.K;
-  int idx = (int)tid;
-  int total = p.B * out_h * out_w * p.H * K2;
-  if (idx >= total) return;
 
-  int kpos = idx % K2;
-  int kh = kpos / p.K;
-  int kw = kpos % p.K;
-  int t = idx / K2;
-  int h = t % p.H;
-  t /= p.H;
-  int ow = t % out_w;
-  t /= out_w;
-  int oh = t % out_h;
-  int b = t / out_h;
+  int kpos = (int)gid.x;
+  int ow = (int)gid.y;
+  int z = (int)gid.z;
+  if (kpos >= K2 || ow >= out_w) return;
+
+  int oh = z % out_h;
+  int bh = z / out_h;
+  if (bh >= p.B * p.H) return;
+  int b = bh / p.H;
+  int h = bh - b * p.H;
+
+  int kh = kpos / K;
+  int kw = kpos % K;
 
   int qi = oh * p.SH;
   int qj = ow * p.SW;
+
+  int out_idx = ((((b * out_h + oh) * out_w + ow) * p.H + h) * K2 + kpos);
   if (qi >= p.IH || qj >= p.IW) {
-    out[idx] = (T)(-INFINITY);
+    out[out_idx] = (T)(-INFINITY);
     return;
   }
 
-  int nh = p.K / 2;
-  int h_start = p.CH ? 0 : natten_window_start(qi, p.IH, p.K, nh, p.DH);
-  int w_start = p.CW ? 0 : natten_window_start(qj, p.IW, p.K, nh, p.DW);
-  int ih = p.CH ? (qi - (p.K - 1 - kh) * p.DH) : (h_start + kh * p.DH);
-  int iw = p.CW ? (qj - (p.K - 1 - kw) * p.DW) : (w_start + kw * p.DW);
+  int nh = K / 2;
+  int h_start = p.CH ? 0 : natten_window_start(qi, p.IH, K, nh, p.DH);
+  int w_start = p.CW ? 0 : natten_window_start(qj, p.IW, K, nh, p.DW);
+  int ih = p.CH ? (qi - (K - 1 - kh) * p.DH) : (h_start + kh * p.DH);
+  int iw = p.CW ? (qj - (K - 1 - kw) * p.DW) : (w_start + kw * p.DW);
   if (ih < 0 || ih >= p.IH || iw < 0 || iw >= p.IW) {
-    out[idx] = (T)(-INFINITY);
+    out[out_idx] = (T)(-INFINITY);
     return;
   }
 
@@ -398,11 +406,11 @@ template <typename T, typename T4>
     const device T4* k4 = reinterpret_cast<const device T4*>(key + k_base + d4 * 4);
     acc += dot(float4(*q4), float4(*k4));
   }
-  out[idx] = (T)(acc * p.SCALE);
+  out[out_idx] = (T)(acc * p.SCALE);
 }
 
 // ======================================================================
-// 2D Split AV Forward — spatial-first
+// 2D Split AV Forward — spatial-first, 3D grid (D, out_w, out_h * B * H)
 // ======================================================================
 
 template <typename T>
@@ -411,54 +419,54 @@ template <typename T>
     device const T* value [[buffer(1)]],
     device T* out [[buffer(2)]],
     constant NA2DParams& p [[buffer(3)]],
-    uint tid [[thread_position_in_grid]]) {
+    uint3 gid [[thread_position_in_grid]]) {
 
+  int K = has_fc_k ? FC_K : p.K;
+  int K2 = K * K;
   int out_h = (p.IH + p.SH - 1) / p.SH;
   int out_w = (p.IW + p.SW - 1) / p.SW;
-  int idx = (int)tid;
-  int total = p.B * out_h * out_w * p.H * p.D;
-  if (idx >= total) return;
 
-  int d = idx % p.D;
-  int t = idx / p.D;
-  int h = t % p.H;
-  t /= p.H;
-  int ow = t % out_w;
-  t /= out_w;
-  int oh = t % out_h;
-  int b = t / out_h;
+  int d = (int)gid.x;
+  int ow = (int)gid.y;
+  int z = (int)gid.z;
+  if (d >= p.D || ow >= out_w) return;
+
+  int oh = z % out_h;
+  int bh = z / out_h;
+  if (bh >= p.B * p.H) return;
+  int b = bh / p.H;
+  int h = bh - b * p.H;
 
   int qi = oh * p.SH;
   int qj = ow * p.SW;
+
+  int out_idx = ((((b * out_h + oh) * out_w + ow) * p.H + h) * p.D + d);
   if (qi >= p.IH || qj >= p.IW) {
-    out[idx] = (T)0.0f;
+    out[out_idx] = (T)0.0f;
     return;
   }
 
-  int nh = p.K / 2;
-  int h_start = p.CH ? 0 : natten_window_start(qi, p.IH, p.K, nh, p.DH);
-  int w_start = p.CW ? 0 : natten_window_start(qj, p.IW, p.K, nh, p.DW);
-  int K2 = p.K * p.K;
-  // Attn layout: [B, out_h, out_w, H, K*K]
+  int nh = K / 2;
+  int h_start = p.CH ? 0 : natten_window_start(qi, p.IH, K, nh, p.DH);
+  int w_start = p.CW ? 0 : natten_window_start(qj, p.IW, K, nh, p.DW);
   int attn_base = ((((b * out_h + oh) * out_w + ow) * p.H + h) * K2);
   float acc = 0.0f;
-  for (int kh = 0; kh < p.K; ++kh) {
-    int ih = p.CH ? (qi - (p.K - 1 - kh) * p.DH) : (h_start + kh * p.DH);
+  for (int kh = 0; kh < K; ++kh) {
+    int ih = p.CH ? (qi - (K - 1 - kh) * p.DH) : (h_start + kh * p.DH);
     if (ih < 0 || ih >= p.IH) continue;
-    for (int kw = 0; kw < p.K; ++kw) {
-      int iw = p.CW ? (qj - (p.K - 1 - kw) * p.DW) : (w_start + kw * p.DW);
+    for (int kw = 0; kw < K; ++kw) {
+      int iw = p.CW ? (qj - (K - 1 - kw) * p.DW) : (w_start + kw * p.DW);
       if (iw < 0 || iw >= p.IW) continue;
-      float w = (float)attn[attn_base + kh * p.K + kw];
-      // Value is spatial-first: [B, IH, IW, H, D]
+      float w = (float)attn[attn_base + kh * K + kw];
       int v_idx = sf_base_2d(b, h, ih, iw, p.IH, p.IW, p.H, p.D) + d;
       acc += w * (float)value[v_idx];
     }
   }
-  out[idx] = (T)acc;
+  out[out_idx] = (T)acc;
 }
 
 // ======================================================================
-// 2D Split AV Forward — vec4
+// 2D Split AV Forward — vec4, 3D grid (D/4, out_w, out_h * B * H)
 // ======================================================================
 
 template <typename T, typename T4>
@@ -467,23 +475,24 @@ template <typename T, typename T4>
     device const T* value [[buffer(1)]],
     device T* out [[buffer(2)]],
     constant NA2DParams& p [[buffer(3)]],
-    uint tid [[thread_position_in_grid]]) {
+    uint3 gid [[thread_position_in_grid]]) {
 
+  int K = has_fc_k ? FC_K : p.K;
+  int K2 = K * K;
   int out_h = (p.IH + p.SH - 1) / p.SH;
   int out_w = (p.IW + p.SW - 1) / p.SW;
   int d4_count = p.D / 4;
-  int idx = (int)tid;
-  int total = p.B * out_h * out_w * p.H * d4_count;
-  if (idx >= total) return;
 
-  int d4 = idx % d4_count;
-  int t = idx / d4_count;
-  int h = t % p.H;
-  t /= p.H;
-  int ow = t % out_w;
-  t /= out_w;
-  int oh = t % out_h;
-  int b = t / out_h;
+  int d4 = (int)gid.x;
+  int ow = (int)gid.y;
+  int z = (int)gid.z;
+  if (d4 >= d4_count || ow >= out_w) return;
+
+  int oh = z % out_h;
+  int bh = z / out_h;
+  if (bh >= p.B * p.H) return;
+  int b = bh / p.H;
+  int h = bh - b * p.H;
 
   int qi = oh * p.SH;
   int qj = ow * p.SW;
@@ -494,19 +503,18 @@ template <typename T, typename T4>
     return;
   }
 
-  int nh = p.K / 2;
-  int h_start = p.CH ? 0 : natten_window_start(qi, p.IH, p.K, nh, p.DH);
-  int w_start = p.CW ? 0 : natten_window_start(qj, p.IW, p.K, nh, p.DW);
-  int K2 = p.K * p.K;
+  int nh = K / 2;
+  int h_start = p.CH ? 0 : natten_window_start(qi, p.IH, K, nh, p.DH);
+  int w_start = p.CW ? 0 : natten_window_start(qj, p.IW, K, nh, p.DW);
   int attn_base = ((((b * out_h + oh) * out_w + ow) * p.H + h) * K2);
   float4 acc = float4(0.0f);
-  for (int kh = 0; kh < p.K; ++kh) {
-    int ih = p.CH ? (qi - (p.K - 1 - kh) * p.DH) : (h_start + kh * p.DH);
+  for (int kh = 0; kh < K; ++kh) {
+    int ih = p.CH ? (qi - (K - 1 - kh) * p.DH) : (h_start + kh * p.DH);
     if (ih < 0 || ih >= p.IH) continue;
-    for (int kw = 0; kw < p.K; ++kw) {
-      int iw = p.CW ? (qj - (p.K - 1 - kw) * p.DW) : (w_start + kw * p.DW);
+    for (int kw = 0; kw < K; ++kw) {
+      int iw = p.CW ? (qj - (K - 1 - kw) * p.DW) : (w_start + kw * p.DW);
       if (iw < 0 || iw >= p.IW) continue;
-      float w = (float)attn[attn_base + kh * p.K + kw];
+      float w = (float)attn[attn_base + kh * K + kw];
       int v_base = sf_base_2d(b, h, ih, iw, p.IH, p.IW, p.H, p.D) + d4 * 4;
       const device T4* v4 = reinterpret_cast<const device T4*>(value + v_base);
       acc += w * float4(*v4);
@@ -517,10 +525,10 @@ template <typename T, typename T4>
 }
 
 // ======================================================================
-// 2D Backward — Fused attn recompute + grad_attn
+// 2D Backward — Fused attn recompute + grad_logits
 // Thread grid: (out_w, out_h, B*H)
-// Per thread: recompute QK softmax, compute grad_attn = grad_out · V^T
-// Outputs: attn [B, OH, OW, H, K²], grad_attn [same shape]
+// Per thread: recompute QK softmax, compute grad_logits via fused softmax backward
+// Outputs: attn [B, OH, OW, H, K²], grad_logits [same shape]
 // ======================================================================
 
 template <typename T>
@@ -530,7 +538,7 @@ template <typename T>
     device const T* value [[buffer(2)]],
     device const T* grad_out [[buffer(3)]],
     device float* attn_out [[buffer(4)]],
-    device float* grad_attn_out [[buffer(5)]],
+    device float* grad_logits_out [[buffer(5)]],
     constant NA2DParams& p [[buffer(6)]],
     uint3 gid [[thread_position_in_grid]]) {
 
@@ -547,7 +555,7 @@ template <typename T>
   int qi = i_out * p.SH;
   int qj = j_out * p.SW;
 
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int K2 = K * K;
   int nh = K / 2;
   int out_base = ((((b * out_h + i_out) * out_w + j_out) * p.H + h) * K2);
@@ -555,7 +563,7 @@ template <typename T>
   if (qi >= p.IH || qj >= p.IW) {
     for (int n = 0; n < K2; ++n) {
       attn_out[out_base + n] = 0.0f;
-      grad_attn_out[out_base + n] = 0.0f;
+      grad_logits_out[out_base + n] = 0.0f;
     }
     return;
   }
@@ -575,7 +583,7 @@ template <typename T>
   int q_base = sf_base_2d(b, h, qi, qj, p.IH, p.IW, p.H, p.D);
   int go_base = sf_base_2d(b, h, i_out, j_out, out_h, out_w, p.H, p.D);
 
-  // Pass 1: Compute QK scores and grad_attn (grad_out · V^T)
+  // Pass 1: Compute QK scores and ga_vals (grad_out · V^T)
   float scores[169];
   float ga_vals[169];
   int key_valid[169];
@@ -624,10 +632,15 @@ template <typename T>
   }
   float inv_denom = denom > 0.0f ? (1.0f / denom) : 0.0f;
 
-  // Write attn and grad_attn
+  // Fused softmax backward: grad_logits = attn * (grad_attn - sum(attn * grad_attn))
+  float inner = 0.0f;
   for (int n = 0; n < K2; ++n) {
-    attn_out[out_base + n] = scores[n] * inv_denom;
-    grad_attn_out[out_base + n] = ga_vals[n];
+    float a = scores[n] * inv_denom;
+    attn_out[out_base + n] = a;
+    inner += a * ga_vals[n];
+  }
+  for (int n = 0; n < K2; ++n) {
+    grad_logits_out[out_base + n] = attn_out[out_base + n] * (ga_vals[n] - inner);
   }
 }
 
@@ -639,7 +652,7 @@ template <typename T, typename T4>
     device const T* value [[buffer(2)]],
     device const T* grad_out [[buffer(3)]],
     device float* attn_out [[buffer(4)]],
-    device float* grad_attn_out [[buffer(5)]],
+    device float* grad_logits_out [[buffer(5)]],
     constant NA2DParams& p [[buffer(6)]],
     uint3 gid [[thread_position_in_grid]]) {
 
@@ -656,7 +669,7 @@ template <typename T, typename T4>
   int qi = i_out * p.SH;
   int qj = j_out * p.SW;
 
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int K2 = K * K;
   int nh = K / 2;
   int dim4 = p.D / 4;
@@ -665,7 +678,7 @@ template <typename T, typename T4>
   if (qi >= p.IH || qj >= p.IW) {
     for (int n = 0; n < K2; ++n) {
       attn_out[out_base + n] = 0.0f;
-      grad_attn_out[out_base + n] = 0.0f;
+      grad_logits_out[out_base + n] = 0.0f;
     }
     return;
   }
@@ -735,9 +748,15 @@ template <typename T, typename T4>
   }
   float inv_denom = denom > 0.0f ? (1.0f / denom) : 0.0f;
 
+  // Fused softmax backward: grad_logits = attn * (grad_attn - sum(attn * grad_attn))
+  float inner = 0.0f;
   for (int n = 0; n < K2; ++n) {
-    attn_out[out_base + n] = scores[n] * inv_denom;
-    grad_attn_out[out_base + n] = ga_vals[n];
+    float a = scores[n] * inv_denom;
+    attn_out[out_base + n] = a;
+    inner += a * ga_vals[n];
+  }
+  for (int n = 0; n < K2; ++n) {
+    grad_logits_out[out_base + n] = attn_out[out_base + n] * (ga_vals[n] - inner);
   }
 }
 
@@ -763,7 +782,7 @@ template <typename T>
   int h = bh - b * p.H;
   int out_h = (p.IH + p.SH - 1) / p.SH;
   int out_w = (p.IW + p.SW - 1) / p.SW;
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int K2 = K * K;
   int nh = K / 2;
 
@@ -829,7 +848,7 @@ template <typename T>
   int h = bh - b * p.H;
   int out_h = (p.IH + p.SH - 1) / p.SH;
   int out_w = (p.IW + p.SW - 1) / p.SW;
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int K2 = K * K;
   int nh = K / 2;
   int k_base = sf_base_2d(b, h, kh, kw, p.IH, p.IW, p.H, p.D);
@@ -911,7 +930,7 @@ template <typename T>
   int h = bh - b * p.H;
   int out_h = (p.IH + p.SH - 1) / p.SH;
   int out_w = (p.IW + p.SW - 1) / p.SW;
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int K2 = K * K;
   int nh = K / 2;
   int v_base = sf_base_2d(b, h, vh, vw, p.IH, p.IW, p.H, p.D);
@@ -1007,57 +1026,57 @@ template [[host_name("na2d_fused_v2_stored_vec4_bf16")]]
 template [[host_name("na2d_qk_v2_fp32")]]
 [[kernel]] void na2d_qk_v2_kernel<float>(
     device const float*, device const float*, device float*,
-    constant NA2DParams&, uint);
+    constant NA2DParams&, uint3);
 template [[host_name("na2d_qk_v2_fp16")]]
 [[kernel]] void na2d_qk_v2_kernel<half>(
     device const half*, device const half*, device half*,
-    constant NA2DParams&, uint);
+    constant NA2DParams&, uint3);
 template [[host_name("na2d_qk_v2_bf16")]]
 [[kernel]] void na2d_qk_v2_kernel<bfloat16_t>(
     device const bfloat16_t*, device const bfloat16_t*, device bfloat16_t*,
-    constant NA2DParams&, uint);
+    constant NA2DParams&, uint3);
 
 // Split QK vec4
 template [[host_name("na2d_qk_v2_vec4_fp32")]]
 [[kernel]] void na2d_qk_v2_vec4_kernel<float, float4>(
     device const float*, device const float*, device float*,
-    constant NA2DParams&, uint);
+    constant NA2DParams&, uint3);
 template [[host_name("na2d_qk_v2_vec4_fp16")]]
 [[kernel]] void na2d_qk_v2_vec4_kernel<half, half4>(
     device const half*, device const half*, device half*,
-    constant NA2DParams&, uint);
+    constant NA2DParams&, uint3);
 template [[host_name("na2d_qk_v2_vec4_bf16")]]
 [[kernel]] void na2d_qk_v2_vec4_kernel<bfloat16_t, bfloat4>(
     device const bfloat16_t*, device const bfloat16_t*, device bfloat16_t*,
-    constant NA2DParams&, uint);
+    constant NA2DParams&, uint3);
 
 // Split AV scalar
 template [[host_name("na2d_av_v2_fp32")]]
 [[kernel]] void na2d_av_v2_kernel<float>(
     device const float*, device const float*, device float*,
-    constant NA2DParams&, uint);
+    constant NA2DParams&, uint3);
 template [[host_name("na2d_av_v2_fp16")]]
 [[kernel]] void na2d_av_v2_kernel<half>(
     device const half*, device const half*, device half*,
-    constant NA2DParams&, uint);
+    constant NA2DParams&, uint3);
 template [[host_name("na2d_av_v2_bf16")]]
 [[kernel]] void na2d_av_v2_kernel<bfloat16_t>(
     device const bfloat16_t*, device const bfloat16_t*, device bfloat16_t*,
-    constant NA2DParams&, uint);
+    constant NA2DParams&, uint3);
 
 // Split AV vec4
 template [[host_name("na2d_av_v2_vec4_fp32")]]
 [[kernel]] void na2d_av_v2_vec4_kernel<float, float4>(
     device const float*, device const float*, device float*,
-    constant NA2DParams&, uint);
+    constant NA2DParams&, uint3);
 template [[host_name("na2d_av_v2_vec4_fp16")]]
 [[kernel]] void na2d_av_v2_vec4_kernel<half, half4>(
     device const half*, device const half*, device half*,
-    constant NA2DParams&, uint);
+    constant NA2DParams&, uint3);
 template [[host_name("na2d_av_v2_vec4_bf16")]]
 [[kernel]] void na2d_av_v2_vec4_kernel<bfloat16_t, bfloat4>(
     device const bfloat16_t*, device const bfloat16_t*, device bfloat16_t*,
-    constant NA2DParams&, uint);
+    constant NA2DParams&, uint3);
 
 // Backward attn scalar
 template [[host_name("na2d_bwd_attn_v2_fp32")]]

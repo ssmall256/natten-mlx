@@ -10,6 +10,10 @@
 
 using namespace metal;
 
+// Function constant for compile-time K specialization (loop unrolling)
+constant int FC_K [[function_constant(0)]];
+constant bool has_fc_k = is_function_constant_defined(FC_K);
+
 struct NA3DParamsV2 {
   int B;
   int ID;
@@ -88,7 +92,7 @@ template <typename T>
   int qw = ow * p.SW;
   if (qd >= p.ID || qh >= p.IH || qw >= p.IW) return;
 
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int nh = K / 2;
   int K3 = K * K * K;
 
@@ -193,7 +197,7 @@ template <typename T, typename T4>
   int qw = ow * p.SW;
   if (qd >= p.ID || qh >= p.IH || qw >= p.IW) return;
 
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int nh = K / 2;
   int K3 = K * K * K;
   int dim4 = p.D / 4;
@@ -271,7 +275,7 @@ template <typename T, typename T4>
 }
 
 // ======================================================================
-// 3D Backward — Fused attn recompute + grad_attn
+// 3D Backward — Fused attn recompute + grad_logits
 // Thread grid: (out_w, out_h, B*H*out_d)
 // ======================================================================
 
@@ -282,7 +286,7 @@ template <typename T>
     device const T* value [[buffer(2)]],
     device const T* grad_out [[buffer(3)]],
     device float* attn_out [[buffer(4)]],
-    device float* grad_attn_out [[buffer(5)]],
+    device float* grad_logits_out [[buffer(5)]],
     constant NA3DParamsV2& p [[buffer(6)]],
     uint3 gid [[thread_position_in_grid]]) {
 
@@ -304,7 +308,7 @@ template <typename T>
   int qh = oh * p.SH;
   int qw = ow * p.SW;
 
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int K3 = K * K * K;
   int nh = K / 2;
   int out_base = (((((b * out_d + od) * out_h + oh) * out_w + ow) * p.H + h) * K3);
@@ -312,7 +316,7 @@ template <typename T>
   if (qd >= p.ID || qh >= p.IH || qw >= p.IW) {
     for (int n = 0; n < K3; ++n) {
       attn_out[out_base + n] = 0.0f;
-      grad_attn_out[out_base + n] = 0.0f;
+      grad_logits_out[out_base + n] = 0.0f;
     }
     return;
   }
@@ -373,9 +377,15 @@ template <typename T>
   }
   float inv_denom = denom > 0.0f ? (1.0f / denom) : 0.0f;
 
+  // Fused softmax backward: grad_logits = attn * (grad_attn - sum(attn * grad_attn))
+  float inner = 0.0f;
   for (int n = 0; n < K3; ++n) {
-    attn_out[out_base + n] = scores[n] * inv_denom;
-    grad_attn_out[out_base + n] = ga_vals[n];
+    float a = scores[n] * inv_denom;
+    attn_out[out_base + n] = a;
+    inner += a * ga_vals[n];
+  }
+  for (int n = 0; n < K3; ++n) {
+    grad_logits_out[out_base + n] = attn_out[out_base + n] * (ga_vals[n] - inner);
   }
 }
 
@@ -387,7 +397,7 @@ template <typename T, typename T4>
     device const T* value [[buffer(2)]],
     device const T* grad_out [[buffer(3)]],
     device float* attn_out [[buffer(4)]],
-    device float* grad_attn_out [[buffer(5)]],
+    device float* grad_logits_out [[buffer(5)]],
     constant NA3DParamsV2& p [[buffer(6)]],
     uint3 gid [[thread_position_in_grid]]) {
 
@@ -409,7 +419,7 @@ template <typename T, typename T4>
   int qh = oh * p.SH;
   int qw = ow * p.SW;
 
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int K3 = K * K * K;
   int nh = K / 2;
   int dim4 = p.D / 4;
@@ -418,7 +428,7 @@ template <typename T, typename T4>
   if (qd >= p.ID || qh >= p.IH || qw >= p.IW) {
     for (int n = 0; n < K3; ++n) {
       attn_out[out_base + n] = 0.0f;
-      grad_attn_out[out_base + n] = 0.0f;
+      grad_logits_out[out_base + n] = 0.0f;
     }
     return;
   }
@@ -483,9 +493,15 @@ template <typename T, typename T4>
   }
   float inv_denom = denom > 0.0f ? (1.0f / denom) : 0.0f;
 
+  // Fused softmax backward: grad_logits = attn * (grad_attn - sum(attn * grad_attn))
+  float inner = 0.0f;
   for (int n = 0; n < K3; ++n) {
-    attn_out[out_base + n] = scores[n] * inv_denom;
-    grad_attn_out[out_base + n] = ga_vals[n];
+    float a = scores[n] * inv_denom;
+    attn_out[out_base + n] = a;
+    inner += a * ga_vals[n];
+  }
+  for (int n = 0; n < K3; ++n) {
+    grad_logits_out[out_base + n] = attn_out[out_base + n] * (ga_vals[n] - inner);
   }
 }
 
@@ -515,7 +531,7 @@ template <typename T>
   int out_d = (p.ID + p.SD - 1) / p.SD;
   int out_h = (p.IH + p.SH - 1) / p.SH;
   int out_w = (p.IW + p.SW - 1) / p.SW;
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int K3 = K * K * K;
   int nh = K / 2;
 
@@ -590,7 +606,7 @@ template <typename T>
   int out_d = (p.ID + p.SD - 1) / p.SD;
   int out_h = (p.IH + p.SH - 1) / p.SH;
   int out_w = (p.IW + p.SW - 1) / p.SW;
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int K3 = K * K * K;
   int nh = K / 2;
   int k_base = sf_base_3d(b, h, kd, kh, kw, p.ID, p.IH, p.IW, p.H, p.D);
@@ -698,7 +714,7 @@ template <typename T>
   int out_d = (p.ID + p.SD - 1) / p.SD;
   int out_h = (p.IH + p.SH - 1) / p.SH;
   int out_w = (p.IW + p.SW - 1) / p.SW;
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int K3 = K * K * K;
   int nh = K / 2;
   int v_base = sf_base_3d(b, h, vd, vh, vw, p.ID, p.IH, p.IW, p.H, p.D);

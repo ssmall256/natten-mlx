@@ -13,9 +13,9 @@ namespace mx = mlx::core;
 
 namespace natten_mlx {
 
-// ---- Stage 1: Fused attn recompute + grad_attn ----
+// ---- Stage 1: Fused attn recompute + grad_logits ----
 // Inputs: (q, k, v, grad_out) spatial-first [B, IH, IW, H, D]
-// Outputs: (attn, grad_attn) both [B, OH, OW, H, K²] in fp32
+// Outputs: (attn, grad_logits) both [B, OH, OW, H, K²] in fp32
 class NA2DBwdAttn : public mx::Primitive {
  public:
   NA2DBwdAttn(

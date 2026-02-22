@@ -43,6 +43,7 @@ nanobind_add_module(
   ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/window_semantics.cpp
   ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na1d_primitive.cpp
   ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na2d_primitive.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na2d_split_primitive.cpp
   ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na3d_primitive.cpp
   ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na1d_bwd_primitive.cpp
   ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na2d_bwd_primitive.cpp

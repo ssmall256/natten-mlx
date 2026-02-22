@@ -10,6 +10,10 @@
 
 using namespace metal;
 
+// Function constant for compile-time K specialization (loop unrolling)
+constant int FC_K [[function_constant(0)]];
+constant bool has_fc_k = is_function_constant_defined(FC_K);
+
 struct NA1DParamsV2 {
   int B;
   int L;
@@ -70,7 +74,7 @@ template <typename T>
   int qidx = oq * p.S;
   if (qidx >= p.L) return;
 
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int nh = K / 2;
   int q_base = sf_base_1d(b, h, qidx, p.L, p.H, p.D);
 
@@ -153,7 +157,7 @@ template <typename T, typename T4>
   int qidx = oq * p.S;
   if (qidx >= p.L) return;
 
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int nh = K / 2;
   int dim4 = p.D / 4;
   int q_base = sf_base_1d(b, h, qidx, p.L, p.H, p.D);
@@ -218,7 +222,7 @@ template <typename T, typename T4>
 }
 
 // ======================================================================
-// 1D Backward — Fused attn recompute + grad_attn
+// 1D Backward — Fused attn recompute + grad_logits
 // Thread grid: (out_len, B*H)
 // ======================================================================
 
@@ -229,7 +233,7 @@ template <typename T>
     device const T* value [[buffer(2)]],
     device const T* grad_out [[buffer(3)]],
     device float* attn_out [[buffer(4)]],
-    device float* grad_attn_out [[buffer(5)]],
+    device float* grad_logits_out [[buffer(5)]],
     constant NA1DParamsV2& p [[buffer(6)]],
     uint3 gid [[thread_position_in_grid]]) {
 
@@ -242,14 +246,14 @@ template <typename T>
   int h = bh - b * p.H;
   int qidx = oq * p.S;
 
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int nh = K / 2;
   int out_base = (((b * out_len + oq) * p.H + h) * K);
 
   if (qidx >= p.L) {
     for (int n = 0; n < K; ++n) {
       attn_out[out_base + n] = 0.0f;
-      grad_attn_out[out_base + n] = 0.0f;
+      grad_logits_out[out_base + n] = 0.0f;
     }
     return;
   }
@@ -303,9 +307,15 @@ template <typename T>
   }
   float inv_denom = denom > 0.0f ? (1.0f / denom) : 0.0f;
 
+  // Fused softmax backward: grad_logits = attn * (grad_attn - sum(attn * grad_attn))
+  float inner = 0.0f;
   for (int n = 0; n < K; ++n) {
-    attn_out[out_base + n] = scores[n] * inv_denom;
-    grad_attn_out[out_base + n] = ga_vals[n];
+    float a = scores[n] * inv_denom;
+    attn_out[out_base + n] = a;
+    inner += a * ga_vals[n];
+  }
+  for (int n = 0; n < K; ++n) {
+    grad_logits_out[out_base + n] = attn_out[out_base + n] * (ga_vals[n] - inner);
   }
 }
 
@@ -317,7 +327,7 @@ template <typename T, typename T4>
     device const T* value [[buffer(2)]],
     device const T* grad_out [[buffer(3)]],
     device float* attn_out [[buffer(4)]],
-    device float* grad_attn_out [[buffer(5)]],
+    device float* grad_logits_out [[buffer(5)]],
     constant NA1DParamsV2& p [[buffer(6)]],
     uint3 gid [[thread_position_in_grid]]) {
 
@@ -330,7 +340,7 @@ template <typename T, typename T4>
   int h = bh - b * p.H;
   int qidx = oq * p.S;
 
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int nh = K / 2;
   int dim4 = p.D / 4;
   int out_base = (((b * out_len + oq) * p.H + h) * K);
@@ -338,7 +348,7 @@ template <typename T, typename T4>
   if (qidx >= p.L) {
     for (int n = 0; n < K; ++n) {
       attn_out[out_base + n] = 0.0f;
-      grad_attn_out[out_base + n] = 0.0f;
+      grad_logits_out[out_base + n] = 0.0f;
     }
     return;
   }
@@ -395,9 +405,15 @@ template <typename T, typename T4>
   }
   float inv_denom = denom > 0.0f ? (1.0f / denom) : 0.0f;
 
+  // Fused softmax backward: grad_logits = attn * (grad_attn - sum(attn * grad_attn))
+  float inner = 0.0f;
   for (int n = 0; n < K; ++n) {
-    attn_out[out_base + n] = scores[n] * inv_denom;
-    grad_attn_out[out_base + n] = ga_vals[n];
+    float a = scores[n] * inv_denom;
+    attn_out[out_base + n] = a;
+    inner += a * ga_vals[n];
+  }
+  for (int n = 0; n < K; ++n) {
+    grad_logits_out[out_base + n] = attn_out[out_base + n] * (ga_vals[n] - inner);
   }
 }
 
@@ -421,7 +437,7 @@ template <typename T>
   int b = bh / p.H;
   int h = bh - b * p.H;
   int out_len = (p.L + p.S - 1) / p.S;
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int nh = K / 2;
 
   int base = sf_base_1d(b, h, il, p.L, p.H, p.D);
@@ -474,7 +490,7 @@ template <typename T>
   int b = bh / p.H;
   int h = bh - b * p.H;
   int out_len = (p.L + p.S - 1) / p.S;
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int nh = K / 2;
   int k_base = sf_base_1d(b, h, kl, p.L, p.H, p.D);
 
@@ -530,7 +546,7 @@ template <typename T>
   int b = bh / p.H;
   int h = bh - b * p.H;
   int out_len = (p.L + p.S - 1) / p.S;
-  int K = p.K;
+  int K = has_fc_k ? FC_K : p.K;
   int nh = K / 2;
   int v_base = sf_base_1d(b, h, vl, p.L, p.H, p.D);
 

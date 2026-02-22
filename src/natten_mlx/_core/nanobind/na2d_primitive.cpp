@@ -60,10 +60,11 @@ std::string v2_binary_dir() {
   return dir;
 }
 
-MTL::ComputePipelineState* get_v2_kernel(const std::string& name) {
+MTL::ComputePipelineState* get_v2_kernel(const std::string& name, int kernel_size) {
+  std::string cache_key = name + "_k" + std::to_string(kernel_size);
   {
     std::lock_guard<std::mutex> lock(v2_kernel_cache_mutex());
-    auto it = v2_kernel_cache().find(name);
+    auto it = v2_kernel_cache().find(cache_key);
     if (it != v2_kernel_cache().end()) {
       return it->second;
     }
@@ -73,13 +74,15 @@ MTL::ComputePipelineState* get_v2_kernel(const std::string& name) {
   if (!lib) {
     throw std::runtime_error("Failed to load natten_nb metallib for v2 kernels");
   }
-  auto* kernel = dev.get_kernel(name, lib);
+  mx::metal::MTLFCList fc = {
+      {&kernel_size, MTL::DataType::DataTypeInt, 0}};
+  auto* kernel = dev.get_kernel(name, lib, cache_key, fc);
   if (!kernel) {
     throw std::runtime_error("Failed to resolve v2 kernel: " + name);
   }
   {
     std::lock_guard<std::mutex> lock(v2_kernel_cache_mutex());
-    v2_kernel_cache()[name] = kernel;
+    v2_kernel_cache()[cache_key] = kernel;
   }
   return kernel;
 }
@@ -135,7 +138,7 @@ void NA2DFusedForward::eval_gpu(
   outputs[0].set_data(mx::allocator::malloc(out_bytes));
 
   // Get kernel and dispatch
-  auto* kernel_fn = get_v2_kernel(kname);
+  auto* kernel_fn = get_v2_kernel(kname, kernel_size_);
   auto& dev = mx::metal::device(mx::Device::gpu);
   auto& enc = dev.get_command_encoder(stream().index);
 
