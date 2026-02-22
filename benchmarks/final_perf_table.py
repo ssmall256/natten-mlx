@@ -193,8 +193,8 @@ def _ratio(base: float, other: float) -> str:
 
 def _to_markdown(payload: dict) -> str:
     lines = []
-    lines.append("| Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal speedup vs pure | nanobind speedup vs pure |")
-    lines.append("|---|---:|---:|---:|---:|---:|---:|")
+    lines.append("| Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal vs pure | nanobind vs pure | nanobind vs fast_metal |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
     for case in payload["cases"]:
         case_name = case["name"]
         for direction in ("forward", "backward"):
@@ -202,7 +202,7 @@ def _to_markdown(payload: dict) -> str:
             f = payload["results"]["fast_metal"][case_name][direction]["median_ms"]
             n = payload["results"]["nanobind"][case_name][direction]["median_ms"]
             lines.append(
-                f"| `{case_name}` | `{direction}` | {_fmt(p)} | {_fmt(f)} | {_fmt(n)} | {_ratio(p, f)} | {_ratio(p, n)} |"
+                f"| `{case_name}` | `{direction}` | {_fmt(p)} | {_fmt(f)} | {_fmt(n)} | {_ratio(p, f)} | {_ratio(p, n)} | {_ratio(f, n)} |"
             )
     return "\n".join(lines)
 

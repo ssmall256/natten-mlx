@@ -4,6 +4,7 @@ __pycache__/
 *.pyo
 *.pyd
 *.so
+*.dylib
 *.metallib
 *.egg-info/
 build/
