@@ -117,7 +117,7 @@ uv run python benchmarks/forward_perf_guardrail.py --output benchmarks/forward-g
 ## Final Performance Table
 
 Snapshot generated from this repo on:
-- Generated at (UTC): `2026-02-22T18:13:10.434097+00:00`
+- Generated at (UTC): `2026-02-22T20:18:49.989965+00:00`
 - Platform: `macOS-26.3-arm64-arm-64bit`
 - Python: `3.11.8`
 - Command:
@@ -130,20 +130,20 @@ Benchmarks report trimmed statistics by default (`--trim-head 2`) to reduce cold
 
 Median latency table (ms, lower is better; includes both noncausal and causal configurations):
 
-| Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal speedup vs pure | nanobind speedup vs pure |
-|---|---:|---:|---:|---:|---:|---:|
-| `na1d_k7_s1_d1_noncausal` | `forward` | 0.514 | 0.179 | 0.151 | 2.87x | 3.39x |
-| `na1d_k7_s1_d1_noncausal` | `backward` | 0.504 | 0.292 | 0.460 | 1.72x | 1.09x |
-| `na1d_k7_s1_d1_causal` | `forward` | 0.328 | 0.166 | 0.140 | 1.98x | 2.34x |
-| `na1d_k7_s1_d1_causal` | `backward` | 0.383 | 0.294 | 0.394 | 1.30x | 0.97x |
-| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.487 | 0.280 | 0.213 | 5.31x | 6.99x |
-| `na2d_k7x7_s1_d1_noncausal` | `backward` | 2.512 | 0.502 | 0.451 | 5.01x | 5.57x |
-| `na2d_k7x7_s1_d1_causal_h` | `forward` | 1.733 | 0.274 | 0.218 | 6.33x | 7.94x |
-| `na2d_k7x7_s1_d1_causal_h` | `backward` | 1.954 | 0.484 | 0.460 | 4.04x | 4.25x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.871 | 0.205 | 0.185 | 4.25x | 4.71x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 1.019 | 0.341 | 0.448 | 2.99x | 2.28x |
-| `na3d_k3x3x3_s1_d1_causal_d` | `forward` | 0.840 | 0.192 | 0.157 | 4.37x | 5.34x |
-| `na3d_k3x3x3_s1_d1_causal_d` | `backward` | 0.994 | 0.342 | 0.652 | 2.90x | 1.52x |
+| Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal vs pure | nanobind vs pure | nanobind vs fast_metal |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `na1d_k7_s1_d1_noncausal` | `forward` | 0.824 | 0.165 | 0.155 | 5.01x | 5.32x | 1.06x |
+| `na1d_k7_s1_d1_noncausal` | `backward` | 0.461 | 0.308 | 0.186 | 1.50x | 2.47x | 1.65x |
+| `na1d_k7_s1_d1_causal` | `forward` | 0.306 | 0.185 | 0.141 | 1.65x | 2.17x | 1.31x |
+| `na1d_k7_s1_d1_causal` | `backward` | 0.359 | 0.284 | 0.188 | 1.26x | 1.91x | 1.51x |
+| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.397 | 0.279 | 0.248 | 5.00x | 5.64x | 1.13x |
+| `na2d_k7x7_s1_d1_noncausal` | `backward` | 1.789 | 0.478 | 0.324 | 3.74x | 5.52x | 1.47x |
+| `na2d_k7x7_s1_d1_causal_h` | `forward` | 1.386 | 0.252 | 0.250 | 5.50x | 5.55x | 1.01x |
+| `na2d_k7x7_s1_d1_causal_h` | `backward` | 1.780 | 0.495 | 0.317 | 3.60x | 5.61x | 1.56x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.826 | 0.203 | 0.180 | 4.06x | 4.60x | 1.13x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.966 | 0.327 | 0.214 | 2.95x | 4.51x | 1.53x |
+| `na3d_k3x3x3_s1_d1_causal_d` | `forward` | 0.823 | 0.186 | 0.175 | 4.43x | 4.69x | 1.06x |
+| `na3d_k3x3x3_s1_d1_causal_d` | `backward` | 0.946 | 0.339 | 0.206 | 2.79x | 4.58x | 1.64x |
 
 Raw artifacts are written to:
 - `benchmarks/final-perf.json`
@@ -183,8 +183,6 @@ uv pip install nanobind
 NATTEN_MLX_BUILD_NANOBIND=1 uv pip install --no-build-isolation -e .
 ```
 
-Audit provenance for this synthesis: `BACKEND_SYNTHESIS.md`.
-
 Backward support across backends uses v2 primitive backward with pure fallback as safety.
 
 ## Limitations
@@ -200,6 +198,18 @@ Backward support across backends uses v2 primitive backward with pure fallback a
 - `NATTEN_NANOBIND_DISABLE_V2=1` bypasses v2 primitives and falls back to pure.
 - MLX lazy evaluation applies; this package does not force evaluation.
 
+## Acknowledgments
+
+This project implements the neighborhood attention mechanism introduced by [NATTEN](https://github.com/SHI-Labs/NATTEN) (SHI-Labs), ported to Apple's MLX framework with custom Metal kernels. The original NATTEN library and the research behind it are by Ali Hassani, Steven Walton, Humphrey Shi, and collaborators.
+
+If you use neighborhood attention in research, please cite the original papers:
+
+- Hassani et al., "Neighborhood Attention Transformer" (CVPR 2023)
+- Hassani & Shi, "Dilated Neighborhood Attention Transformer" (2022)
+- Hassani et al., "Faster Neighborhood Attention" (NeurIPS 2024)
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) for details.
+
+NATTEN (the original PyTorch library) is also MIT-licensed.

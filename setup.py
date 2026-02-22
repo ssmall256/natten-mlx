@@ -29,5 +29,4 @@ ext_modules, cmdclass = _cmake_ext_config()
 setup(
     ext_modules=ext_modules,
     cmdclass=cmdclass,
-    package_data={"natten_mlx._core": ["*.metallib"]},
 )

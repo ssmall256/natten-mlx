@@ -9,7 +9,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 option(BUILD_SHARED_LIBS "Build extension as shared library" ON)
 
 find_package(
-  Python 3.8
+  Python 3.10
   COMPONENTS Interpreter Development.Module
   REQUIRED)
 

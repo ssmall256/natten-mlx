@@ -13,6 +13,9 @@ dependencies = [
     "mlx>=0.10.0",
     "packaging",
 ]
+authors = [
+    {name = "ssmall256"},
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -22,6 +25,10 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
+
+[project.urls]
+Repository = "https://github.com/ssmall256/natten-mlx"
+Issues = "https://github.com/ssmall256/natten-mlx/issues"
 
 [project.optional-dependencies]
 dev = ["pytest"]
@@ -35,6 +42,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 natten_mlx = ["py.typed"]
+"natten_mlx._core" = ["*.metallib"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
