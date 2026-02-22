@@ -1,13 +1,9 @@
 #include <nanobind/nanobind.h>
-#include <nanobind/stl/string.h>
-#include <nanobind/stl/optional.h>
-
 #include <cmath>
 #include <string>
 
 #include <mlx/array.h>
 
-#include "nanobind/metal_runtime.h"
 #include "nanobind/na_composed.h"
 #include "nanobind/na_split_backward.h"
 #include "nanobind/na_split_forward.h"
@@ -217,37 +213,6 @@ NB_MODULE(_nanobind_ext, m) {
             arg_at(args, 4),
             arg_at(args, 5),
             arg_at(args, 6));
-    });
-
-    m.def("_debug_get_last_route", [](const std::string& op) {
-        return natten_mlx::nanobind_metal_runtime::debug_get_last_route(op);
-    });
-    m.def("_debug_clear_last_routes", []() {
-        natten_mlx::nanobind_metal_runtime::debug_clear_last_routes();
-    });
-    m.def("_debug_get_last_kernel", [](const std::string& op) {
-        return natten_mlx::nanobind_metal_runtime::debug_get_last_kernel(op);
-    });
-    m.def("_debug_clear_last_kernels", []() {
-        natten_mlx::nanobind_metal_runtime::debug_clear_last_kernels();
-    });
-    m.def("_debug_force_fused_failure", [](bool enabled) {
-        natten_mlx::nanobind_metal_runtime::debug_force_fused_failure(enabled);
-    });
-    m.def("_debug_force_split_failure", [](bool enabled) {
-        natten_mlx::nanobind_metal_runtime::debug_force_split_failure(enabled);
-    });
-    m.def("_debug_get_python_bridge_calls", []() {
-        return natten_mlx::nanobind_metal_runtime::debug_get_python_bridge_calls();
-    });
-    m.def("_debug_clear_python_bridge_calls", []() {
-        natten_mlx::nanobind_metal_runtime::debug_clear_python_bridge_calls();
-    });
-    m.def("_debug_get_launch_metrics", []() {
-        return natten_mlx::nanobind_metal_runtime::debug_get_launch_metrics();
-    });
-    m.def("_debug_clear_launch_metrics", []() {
-        natten_mlx::nanobind_metal_runtime::debug_clear_launch_metrics();
     });
 
     {

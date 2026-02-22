@@ -36,11 +36,7 @@ nanobind_add_module(
   ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/_nanobind_ext.cpp
   ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na_split_forward.cpp
   ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na_split_backward.cpp
-  ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na_fused_forward.cpp
-  ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na_fused_backward.cpp
   ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na_composed.cpp
-  ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/metal_runtime.cpp
-  ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/window_semantics.cpp
   ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na1d_primitive.cpp
   ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na2d_primitive.cpp
   ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na2d_split_primitive.cpp
@@ -59,8 +55,6 @@ if(MLX_BUILD_METAL)
     TARGET natten_nb_metallib
     TITLE natten_nb
     SOURCES
-    ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/natten_nb_split.metal
-    ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/natten_nb_fused.metal
     ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/natten_nb_1d_v2.metal
     ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/natten_nb_2d_v2.metal
     ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/natten_nb_3d_v2.metal

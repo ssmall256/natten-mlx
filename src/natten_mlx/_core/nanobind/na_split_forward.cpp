@@ -4,11 +4,9 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
-#include <typeinfo>
 
 #include <mlx/array.h>
 
-#include "metal_runtime.h"
 #include "na2d_split_primitive.h"
 #include "py_dispatch.h"
 
@@ -42,20 +40,8 @@ nb::object na1d_qk_forward(
     const nb::object& dilation,
     const nb::object& is_causal,
     const nb::object& scale) {
-    if (!natten_mlx::nanobind_backend::use_native_runtime()) {
-        if (natten_mlx::nanobind_metal_runtime::debug_forced_split_failure()) {
-            throw std::runtime_error("forced split failure");
-        }
-        return natten_mlx::nanobind_backend::call_backend(
-            "na1d_qk_forward", q, k, kernel_size, stride, dilation, is_causal, scale);
-    }
-    try {
-        return natten_mlx::nanobind_metal_runtime::na1d_qk_forward(
-            q, k, kernel_size, stride, dilation, is_causal, scale);
-    } catch (const std::bad_cast&) {
-        return natten_mlx::nanobind_backend::call_backend(
-            "na1d_qk_forward", q, k, kernel_size, stride, dilation, is_causal, scale);
-    }
+    return natten_mlx::nanobind_backend::call_pure(
+        "na1d_qk_forward", q, k, kernel_size, stride, dilation, is_causal, scale);
 }
 
 nb::object na1d_av_forward(
@@ -65,20 +51,8 @@ nb::object na1d_av_forward(
     const nb::object& stride,
     const nb::object& dilation,
     const nb::object& is_causal) {
-    if (!natten_mlx::nanobind_backend::use_native_runtime()) {
-        if (natten_mlx::nanobind_metal_runtime::debug_forced_split_failure()) {
-            throw std::runtime_error("forced split failure");
-        }
-        return natten_mlx::nanobind_backend::call_backend(
-            "na1d_av_forward", attn, v, kernel_size, stride, dilation, is_causal);
-    }
-    try {
-        return natten_mlx::nanobind_metal_runtime::na1d_av_forward(
-            attn, v, kernel_size, stride, dilation, is_causal);
-    } catch (const std::bad_cast&) {
-        return natten_mlx::nanobind_backend::call_backend(
-            "na1d_av_forward", attn, v, kernel_size, stride, dilation, is_causal);
-    }
+    return natten_mlx::nanobind_backend::call_pure(
+        "na1d_av_forward", attn, v, kernel_size, stride, dilation, is_causal);
 }
 
 nb::object na2d_qk_forward(
@@ -117,26 +91,14 @@ nb::object na2d_qk_forward(
                     return nb::cast(out);
                 }
             } catch (const std::exception& e) {
-                std::cerr << "natten_mlx: v2 split na2d_qk fell back to legacy: " << e.what() << std::endl;
+                std::cerr << "natten_mlx: v2 split na2d_qk fell back to pure: " << e.what() << std::endl;
             } catch (...) {
-                std::cerr << "natten_mlx: v2 split na2d_qk fell back to legacy (unknown error)" << std::endl;
+                std::cerr << "natten_mlx: v2 split na2d_qk fell back to pure (unknown error)" << std::endl;
             }
         }
     }
-    if (!natten_mlx::nanobind_backend::use_native_runtime()) {
-        if (natten_mlx::nanobind_metal_runtime::debug_forced_split_failure()) {
-            throw std::runtime_error("forced split failure");
-        }
-        return natten_mlx::nanobind_backend::call_backend(
-            "na2d_qk_forward", q, k, kernel_size, stride, dilation, is_causal, scale);
-    }
-    try {
-        return natten_mlx::nanobind_metal_runtime::na2d_qk_forward(
-            q, k, kernel_size, stride, dilation, is_causal, scale);
-    } catch (const std::bad_cast&) {
-        return natten_mlx::nanobind_backend::call_backend(
-            "na2d_qk_forward", q, k, kernel_size, stride, dilation, is_causal, scale);
-    }
+    return natten_mlx::nanobind_backend::call_pure(
+        "na2d_qk_forward", q, k, kernel_size, stride, dilation, is_causal, scale);
 }
 
 nb::object na2d_av_forward(
@@ -167,26 +129,14 @@ nb::object na2d_av_forward(
                     return nb::cast(out);
                 }
             } catch (const std::exception& e) {
-                std::cerr << "natten_mlx: v2 split na2d_av fell back to legacy: " << e.what() << std::endl;
+                std::cerr << "natten_mlx: v2 split na2d_av fell back to pure: " << e.what() << std::endl;
             } catch (...) {
-                std::cerr << "natten_mlx: v2 split na2d_av fell back to legacy (unknown error)" << std::endl;
+                std::cerr << "natten_mlx: v2 split na2d_av fell back to pure (unknown error)" << std::endl;
             }
         }
     }
-    if (!natten_mlx::nanobind_backend::use_native_runtime()) {
-        if (natten_mlx::nanobind_metal_runtime::debug_forced_split_failure()) {
-            throw std::runtime_error("forced split failure");
-        }
-        return natten_mlx::nanobind_backend::call_backend(
-            "na2d_av_forward", attn, v, kernel_size, stride, dilation, is_causal);
-    }
-    try {
-        return natten_mlx::nanobind_metal_runtime::na2d_av_forward(
-            attn, v, kernel_size, stride, dilation, is_causal);
-    } catch (const std::bad_cast&) {
-        return natten_mlx::nanobind_backend::call_backend(
-            "na2d_av_forward", attn, v, kernel_size, stride, dilation, is_causal);
-    }
+    return natten_mlx::nanobind_backend::call_pure(
+        "na2d_av_forward", attn, v, kernel_size, stride, dilation, is_causal);
 }
 
 nb::object na3d_qk_forward(
@@ -197,20 +147,8 @@ nb::object na3d_qk_forward(
     const nb::object& dilation,
     const nb::object& is_causal,
     const nb::object& scale) {
-    if (!natten_mlx::nanobind_backend::use_native_runtime()) {
-        if (natten_mlx::nanobind_metal_runtime::debug_forced_split_failure()) {
-            throw std::runtime_error("forced split failure");
-        }
-        return natten_mlx::nanobind_backend::call_backend(
-            "na3d_qk_forward", q, k, kernel_size, stride, dilation, is_causal, scale);
-    }
-    try {
-        return natten_mlx::nanobind_metal_runtime::na3d_qk_forward(
-            q, k, kernel_size, stride, dilation, is_causal, scale);
-    } catch (const std::bad_cast&) {
-        return natten_mlx::nanobind_backend::call_backend(
-            "na3d_qk_forward", q, k, kernel_size, stride, dilation, is_causal, scale);
-    }
+    return natten_mlx::nanobind_backend::call_pure(
+        "na3d_qk_forward", q, k, kernel_size, stride, dilation, is_causal, scale);
 }
 
 nb::object na3d_av_forward(
@@ -220,20 +158,8 @@ nb::object na3d_av_forward(
     const nb::object& stride,
     const nb::object& dilation,
     const nb::object& is_causal) {
-    if (!natten_mlx::nanobind_backend::use_native_runtime()) {
-        if (natten_mlx::nanobind_metal_runtime::debug_forced_split_failure()) {
-            throw std::runtime_error("forced split failure");
-        }
-        return natten_mlx::nanobind_backend::call_backend(
-            "na3d_av_forward", attn, v, kernel_size, stride, dilation, is_causal);
-    }
-    try {
-        return natten_mlx::nanobind_metal_runtime::na3d_av_forward(
-            attn, v, kernel_size, stride, dilation, is_causal);
-    } catch (const std::bad_cast&) {
-        return natten_mlx::nanobind_backend::call_backend(
-            "na3d_av_forward", attn, v, kernel_size, stride, dilation, is_causal);
-    }
+    return natten_mlx::nanobind_backend::call_pure(
+        "na3d_av_forward", attn, v, kernel_size, stride, dilation, is_causal);
 }
 
 }  // namespace natten_mlx::nanobind_split_forward

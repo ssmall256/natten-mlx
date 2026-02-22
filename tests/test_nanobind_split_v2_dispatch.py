@@ -14,13 +14,9 @@ _EXT = pytest.importorskip(
 def _backend_nanobind():
     previous = natten_mlx.get_backend()
     set_backend("nanobind")
-    _EXT._debug_clear_last_routes()
-    _EXT._debug_clear_last_kernels()
     try:
         yield
     finally:
-        _EXT._debug_clear_last_routes()
-        _EXT._debug_clear_last_kernels()
         set_backend(previous)
 
 

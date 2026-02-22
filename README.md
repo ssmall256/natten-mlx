@@ -185,29 +185,19 @@ NATTEN_MLX_BUILD_NANOBIND=1 uv pip install --no-build-isolation -e .
 
 Audit provenance for this synthesis: `BACKEND_SYNTHESIS.md`.
 
-Backward support across backends uses explicit backend backward entrypoints for fused and split paths, with pure fallback as safety.
+Backward support across backends uses v2 primitive backward with pure fallback as safety.
 
 ## Limitations
 
-- Fast Metal split acceleration eligibility is strict:
-  - `stride>=1` and `dilation>=1` on each active spatial axis, with causal and non-causal supported.
-  - Kernel shape must match operator dimensionality: odd `K` (1D), square odd `(K, K)` (2D), cubic odd `(K, K, K)` (3D).
-- Fast Metal fused acceleration eligibility follows the same per-axis stride/dilation and causal rules, with the same odd/square/cubic kernel-shape requirement by dimensionality.
-- Unsupported accelerated configurations fall back to pure backend for correctness.
+- Metal kernel acceleration requires odd kernel sizes within dimension-specific limits (1D: K≤63, 2D: K≤13, 3D: K≤7).
+- `stride>=1` and `dilation>=1` on each active spatial axis, with causal and non-causal supported.
+- Unsupported configurations fall back to pure backend for correctness.
 
 ## Runtime Notes
 
-- Nanobind tier uses its own in-tree Metal-kernel implementation path with pure fallback safety; it does not delegate to `fast_metal`.
-- Compiled nanobind extension Stage B runs `na1d` / `na2d` / `na3d` forward as fused-first from C++ entrypoints, with fallback chain `fused -> split -> pure`.
-- Compiled nanobind extension Stage B runs `na1d` / `na2d` / `na3d` backward as fused-first staged pipeline (`qk -> softmax grad -> qk/av backward`) in C++ entrypoints, with fallback chain `fused -> split -> pure`.
-- `NATTEN_NANOBIND_NATIVE_RUNTIME` controls compiled nanobind runtime routing: default native C++/Metal path is on; set `NATTEN_NANOBIND_NATIVE_RUNTIME=0` to force Python bridge mode for debugging/regression bisects.
-- Fast Metal forward no longer forces `float32` materialization for `float16`/`bfloat16` inputs; kernels accumulate in `float32` and outputs are cast back to input dtype.
-- Fast Metal low-precision dtype routing stays native by default; optional shape-aware fp32 fallback can be enabled with `NATTEN_MLX_FORWARD_LOWP_FP32_ROUTE=1` (currently a narrow `bfloat16` 2D fused causal/K9 small-shape rule).
-- Fast Metal vec4 forward kernels now cover split `na1d_qk`/`na1d_av`, split `na2d_qk`, split `na3d_qk`, and fused `na1d`/`na2d`/`na3d` when `head_dim % 4 == 0` (including causal paths).
-- Fused 2D/3D kernels now use packed per-neighbor linear indices and in-place softmax weight storage to reduce per-thread local-memory footprint.
-- 2D/3D split `qk_backward` now uses inverse-map `grad_k` kernels (matching the 1D strategy) to avoid reverse-search hotspot behavior.
-- The required backward guardrail includes dedicated split `qk_backward` 2D/3D `grad_k` hotspot cases.
-- Experimental AV-backward fusion kernels (`NATTEN_MLX_AV_BWD_FUSION=1`) now use inverse-map `grad_v` accumulation, but default remains split AV backward because fused is not consistently faster across representative 1D/2D/3D shapes.
+- Nanobind tier uses v2 `mx::Primitive` subclasses for lazy MLX graph integration with pure fallback; it does not delegate to `fast_metal`.
+- Dispatch chain: v2 primitive (Metal kernels) → pure MLX fallback.
+- `NATTEN_NANOBIND_DISABLE_V2=1` bypasses v2 primitives and falls back to pure.
 - MLX lazy evaluation applies; this package does not force evaluation.
 
 ## License

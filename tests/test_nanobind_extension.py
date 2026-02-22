@@ -96,12 +96,6 @@ def test_compiled_nanobind_extension_symbols_if_built():
         "na2d_av_backward",
         "na3d_qk_backward",
         "na3d_av_backward",
-        "_debug_get_last_route",
-        "_debug_clear_last_routes",
-        "_debug_get_last_kernel",
-        "_debug_clear_last_kernels",
-        "_debug_force_fused_failure",
-        "_debug_force_split_failure",
     ]
     for name in expected:
         assert hasattr(ext, name), name
