@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+import sys
+
+if sys.platform != "darwin":
+    raise ImportError(
+        "natten-mlx requires macOS with Apple Silicon. "
+        f"Current platform: {sys.platform}"
+    )
+
 import mlx.core as _mx  # noqa: F401
 
 from natten_mlx._core import fast_metal, nanobind, ops
