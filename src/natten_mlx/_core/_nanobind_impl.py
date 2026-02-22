@@ -1,16 +1,24 @@
 """Built-in nanobind backend implementation.
 
-Provides a stable backend contract in-tree, while still allowing users to
-override with an external compiled extension via `NATTEN_MLX_NANOBIND_MODULE`.
+Provides a stable backend contract in-tree for the nanobind tier. This module
+never delegates to ``fast_metal``; it routes to the nanobind-owned Metal kernel
+backend when available, otherwise pure fallback.
 """
 
 from __future__ import annotations
 
-from . import fast_metal, pure
+from . import pure
+
+try:
+    from . import _nanobind_metal
+except Exception:  # pragma: no cover - guarded import fallback
+    _nanobind_metal = None
 
 
 def _choose():
-    return fast_metal if fast_metal.is_available() else pure
+    if _nanobind_metal is not None and _nanobind_metal.is_available():
+        return _nanobind_metal
+    return pure
 
 
 def na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):

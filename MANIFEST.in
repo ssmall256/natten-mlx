@@ -1,1 +1,3 @@
 include src/natten_mlx/_core/_nanobind_ext.cpp
+include CMakeLists.txt
+recursive-include src/natten_mlx/_core/nanobind *.metal *.cpp *.h

@@ -3,6 +3,7 @@ import importlib.util
 import os
 from pathlib import Path
 
+import mlx.core as mx
 import pytest
 
 
@@ -39,7 +40,7 @@ def test_nanobind_override_falls_back_to_in_tree(monkeypatch):
     reloaded = importlib.reload(nb_backend)
     try:
         assert reloaded.loaded_module_name() == "natten_mlx._core._nanobind_impl"
-        assert reloaded.is_available() is True
+        assert reloaded.is_available() is False
     finally:
         monkeypatch.delenv("NATTEN_MLX_NANOBIND_MODULE", raising=False)
         restored = importlib.reload(nb_backend)
@@ -59,7 +60,7 @@ def test_nanobind_override_accepts_explicit_in_tree_module(monkeypatch):
     reloaded = importlib.reload(nb_backend)
     try:
         assert reloaded.loaded_module_name() == "natten_mlx._core._nanobind_impl"
-        assert reloaded.is_available() is True
+        assert reloaded.is_available() is False
     finally:
         monkeypatch.delenv("NATTEN_MLX_NANOBIND_MODULE", raising=False)
         restored = importlib.reload(nb_backend)
@@ -95,6 +96,10 @@ def test_compiled_nanobind_extension_symbols_if_built():
         "na2d_av_backward",
         "na3d_qk_backward",
         "na3d_av_backward",
+        "_debug_get_last_route",
+        "_debug_clear_last_routes",
+        "_debug_force_fused_failure",
+        "_debug_force_split_failure",
     ]
     for name in expected:
         assert hasattr(ext, name), name
@@ -105,3 +110,25 @@ def test_compiled_nanobind_extension_required_gate():
         pytest.skip("compiled nanobind extension requirement is disabled")
     ext = _load_compiled_nanobind_extension_direct()
     assert ext is not None
+
+
+def test_nanobind_runtime_does_not_delegate_to_fast_metal(monkeypatch):
+    import natten_mlx
+    from natten_mlx import na1d, set_backend
+    from natten_mlx._core import fast_metal
+
+    previous = natten_mlx.get_backend()
+
+    def _unexpected_fast_call(*_args, **_kwargs):
+        raise AssertionError("nanobind backend called fast_metal runtime")
+
+    monkeypatch.setattr(fast_metal, "na1d_forward", _unexpected_fast_call)
+    try:
+        set_backend("nanobind")
+        q = mx.random.normal((1, 8, 2, 4))
+        k = mx.random.normal((1, 8, 2, 4))
+        v = mx.random.normal((1, 8, 2, 4))
+        out = na1d(q, k, v, kernel_size=3, stride=1, dilation=1, is_causal=False)
+        mx.eval(out)
+    finally:
+        set_backend(previous)

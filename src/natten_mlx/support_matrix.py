@@ -42,9 +42,11 @@ def get_support_matrix() -> dict[str, dict]:
             "backward": {"na1d": True, "na2d": True, "na3d": True, "split_qk_av": True},
             "fusion": {"na1d": True, "na2d": True, "na3d": True},
             "constraints": [
-                "Ships with an in-tree implementation that delegates to fast_metal where available, otherwise pure.",
+                "Ships with an in-tree implementation that uses nanobind-owned backend kernels where available, otherwise pure fallback.",
+                "Compiled extension Stage B: na*d forward is fused-first from C++ entrypoints with fallback chain fused -> split -> pure.",
+                "Compiled extension Stage B: na*d backward is fused-first staged pipeline from C++ entrypoints with fallback chain fused -> split -> pure.",
                 "Can be overridden with an external extension via NATTEN_MLX_NANOBIND_MODULE.",
-                "When delegated to fast_metal, the exact same fused/split eligibility constraints apply.",
+                "Compiled extension availability is reported independently from pure fallback behavior.",
             ],
         },
     }

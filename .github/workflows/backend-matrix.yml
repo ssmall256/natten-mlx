@@ -40,6 +40,12 @@ jobs:
       - name: Install numpy runtime dependency
         run: uv pip install numpy
 
+      - name: Build in-tree nanobind extension (nanobind matrix only)
+        if: matrix.backend == 'nanobind'
+        run: |
+          uv pip install setuptools wheel nanobind
+          NATTEN_MLX_BUILD_NANOBIND=1 uv pip install --no-build-isolation -e .
+
       - name: Run backend-matrix tests
         run: >
           uv run pytest -q
@@ -49,6 +55,8 @@ jobs:
           tests/test_compat_gradients.py
           tests/test_functional.py
           tests/test_nanobind_extension.py
+          tests/test_nanobind_fused_dispatch.py
+          tests/test_nanobind_fused_backward_dispatch.py
           tests/test_na1d.py
           tests/test_na2d.py
           tests/test_autograd.py
@@ -94,6 +102,8 @@ jobs:
         run: >
           uv run pytest -q
           tests/test_nanobind_extension.py
+          tests/test_nanobind_fused_dispatch.py
+          tests/test_nanobind_fused_backward_dispatch.py
           tests/test_backends.py
           tests/test_backend_matrix.py
           tests/test_backward_parity.py
@@ -139,6 +149,8 @@ jobs:
     timeout-minutes: 20
     env:
       UV_CACHE_DIR: /tmp/.uv-cache
+      NATTEN_REQUIRE_NANOBIND_EXT: "1"
+      NATTEN_MLX_BUILD_NANOBIND: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -156,6 +168,11 @@ jobs:
 
       - name: Install numpy runtime dependency
         run: uv pip install numpy
+
+      - name: Build in-tree nanobind extension
+        run: |
+          uv pip install setuptools wheel nanobind
+          uv pip install --no-build-isolation -e .
 
       - name: Run backward perf guardrail (required)
         run: >
