@@ -94,6 +94,7 @@ NATTEN_UPSTREAM_PARITY=1 uv run python -m pytest tests/test_upstream_parity.py -
 - Includes a required backward perf guardrail (fast backends must maintain minimum speedup vs pure).
   - Required CI gate uses sequential median-of-medians aggregation (`--rounds 3`) for stability.
   - Guardrail covers baseline 1D/2D/3D plus decode-like 1D cases (causal and long non-causal).
+- Includes a required forward perf guardrail for causal low-precision (`float16`/`bfloat16`) cases.
 - Includes low-precision backend parity coverage (`tests/test_low_precision_backend_parity.py`) for `float16` and `bfloat16` (when available), with explicit tolerance thresholds and causal forward cases.
 - Local benchmark smoke run:
 
@@ -105,6 +106,12 @@ uv run python benchmarks/backend_smoke.py --output benchmarks/backend-smoke.json
 
 ```bash
 uv run python benchmarks/backward_perf_guardrail.py --output benchmarks/backward-guardrail.json --min-speedup 1.20
+```
+
+- Local forward perf guardrail run:
+
+```bash
+uv run python benchmarks/forward_perf_guardrail.py --output benchmarks/forward-guardrail.json --min-speedup 1.10
 ```
 
 ## Final Performance Table
@@ -186,7 +193,9 @@ Backward support across backends uses explicit backend backward entrypoints for 
 
 - Nanobind tier delegates to fast-metal where available (same exact eligibility constraints), otherwise pure fallback.
 - Fast Metal forward no longer forces `float32` materialization for `float16`/`bfloat16` inputs; kernels accumulate in `float32` and outputs are cast back to input dtype.
+- Fast Metal low-precision dtype routing stays native by default; optional shape-aware fp32 fallback can be enabled with `NATTEN_MLX_FORWARD_LOWP_FP32_ROUTE=1` (currently a narrow `bfloat16` 2D fused causal/K9 small-shape rule).
 - Fast Metal vec4 forward kernels now cover split `na1d_qk`/`na1d_av`, split `na2d_qk`, split `na3d_qk`, and fused `na1d`/`na2d`/`na3d` when `head_dim % 4 == 0` (including causal paths).
+- Fused 2D/3D kernels now use packed per-neighbor linear indices and in-place softmax weight storage to reduce per-thread local-memory footprint.
 - 2D/3D split `qk_backward` now uses inverse-map `grad_k` kernels (matching the 1D strategy) to avoid reverse-search hotspot behavior.
 - The required backward guardrail includes dedicated split `qk_backward` 2D/3D `grad_k` hotspot cases.
 - Experimental AV-backward fusion kernels (`NATTEN_MLX_AV_BWD_FUSION=1`) now use inverse-map `grad_v` accumulation, but default remains split AV backward because fused is not consistently faster across representative 1D/2D/3D shapes.

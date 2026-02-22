@@ -111,6 +111,9 @@ _INV_MAP_2D_QK_CACHE: dict[tuple, tuple[mx.array, mx.array, mx.array]] = {}
 _INV_MAP_3D_CACHE: dict[tuple, tuple[mx.array, mx.array, mx.array]] = {}
 _INV_MAP_3D_QK_CACHE: dict[tuple, tuple[mx.array, mx.array, mx.array]] = {}
 _USE_AV_BWD_FUSION = os.getenv("NATTEN_MLX_AV_BWD_FUSION", "").strip() == "1"
+_ENABLE_FORWARD_LOWP_FP32_ROUTE = (
+    os.getenv("NATTEN_MLX_FORWARD_LOWP_FP32_ROUTE", "0").strip() == "1"
+)
 
 
 def is_available() -> bool:
@@ -141,6 +144,48 @@ def _forward_native_input(x: mx.array) -> mx.array:
     if x.dtype == mx.float32 or x.dtype == mx.float16 or (bf16 is not None and x.dtype == bf16):
         return x
     return _cast(x, mx.float32)
+
+
+def _is_low_precision_dtype(dtype: mx.Dtype) -> bool:
+    bf16 = getattr(mx, "bfloat16", None)
+    return dtype == mx.float16 or (bf16 is not None and dtype == bf16)
+
+
+def _should_force_fp32_lowp_forward(
+    *,
+    op: str,
+    dtype: mx.Dtype,
+    kernel_size: int,
+    head_dim: int,
+    spatial_shape: tuple[int, ...],
+    stride: tuple[int, ...],
+    dilation: tuple[int, ...],
+    causal: tuple[int, ...],
+) -> bool:
+    # Keep native fp16/bf16 as the default. This route only handles a
+    # benchmark-validated mixed case where fp32 math is consistently faster.
+    if not _ENABLE_FORWARD_LOWP_FP32_ROUTE or not _is_low_precision_dtype(dtype):
+        return False
+    bf16 = getattr(mx, "bfloat16", None)
+    if (
+        op == "na2d_fused"
+        and bf16 is not None
+        and dtype == bf16
+        and kernel_size >= 9
+        and head_dim == 16
+        and max(spatial_shape) <= 24
+        and sum(int(c) for c in causal) == 1
+        and all(int(s) == 1 for s in stride)
+        and all(int(d) == 1 for d in dilation)
+    ):
+        return True
+    return False
+
+
+def _forward_metal_input(x: mx.array, *, force_fp32: bool) -> mx.array:
+    if force_fp32 and _is_low_precision_dtype(x.dtype):
+        return _cast(x, mx.float32)
+    return _forward_native_input(x)
 
 
 def _threadgroup_1d(length: int) -> tuple[int, int, int]:
@@ -1700,6 +1745,16 @@ def na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
             and dil_w == 1
         )
         use_vec4 = _use_vec4_2d_forward(height, width, q.shape[-1])
+        force_fp32 = _should_force_fp32_lowp_forward(
+            op="na2d_fused",
+            dtype=q.dtype,
+            kernel_size=ksize,
+            head_dim=q.shape[-1],
+            spatial_shape=(height, width),
+            stride=(stride_h, stride_w),
+            dilation=(dil_h, dil_w),
+            causal=(causal_h, causal_w),
+        )
         kernel = (
             _get_2d_fused_vec4_kernel(ksize)
             if use_vec4
@@ -1709,9 +1764,9 @@ def na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
                 else _get_2d_fused_kernel(ksize)
             )
         )
-        q_m = _to_metal_2d(_forward_native_input(q))
-        k_m = _to_metal_2d(_forward_native_input(k))
-        v_m = _to_metal_2d(_forward_native_input(v))
+        q_m = _to_metal_2d(_forward_metal_input(q, force_fp32=force_fp32))
+        k_m = _to_metal_2d(_forward_metal_input(k, force_fp32=force_fp32))
+        v_m = _to_metal_2d(_forward_metal_input(v, force_fp32=force_fp32))
         stride_param = mx.array([stride_h, stride_w], dtype=mx.int32)
         dilation_param = mx.array([dil_h, dil_w], dtype=mx.int32)
         causal_param = mx.array([causal_h, causal_w], dtype=mx.int32)

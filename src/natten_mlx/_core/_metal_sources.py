@@ -855,11 +855,7 @@ if (!causal_w) {{
 }}
 
 float logits[L];
-float probs[L];
-int key_z_arr[L];
-int key_i_arr[L];
-int key_j_arr[L];
-bool key_valid_arr[L];
+int key_lin_arr[L];
 
 float max_logit = -INFINITY;
 int neighbor_idx = 0;
@@ -879,10 +875,7 @@ for (int kz = 0; kz < K; kz++) {{
                 ? (key_j >= 0 && key_j <= j && key_j < width)
                 : (key_j >= 0 && key_j < ej);
             bool valid = valid_z && valid_i && valid_j;
-            key_z_arr[neighbor_idx] = key_z;
-            key_i_arr[neighbor_idx] = key_i;
-            key_j_arr[neighbor_idx] = key_j;
-            key_valid_arr[neighbor_idx] = valid;
+            key_lin_arr[neighbor_idx] = valid ? ((key_z * height + key_i) * width + key_j) : -1;
             float score = -INFINITY;
             if (valid) {{
                 float sum = 0.0f;
@@ -902,21 +895,18 @@ for (int kz = 0; kz < K; kz++) {{
 
 float denom = 0.0f;
 for (int n = 0; n < L; n++) {{
-    float p = exp(logits[n] - max_logit);
-    probs[n] = p;
-    denom += p;
+    logits[n] = exp(logits[n] - max_logit);
+    denom += logits[n];
 }}
 float inv_denom = denom > 0.0f ? 1.0f / denom : 0.0f;
 
 for (int d = 0; d < dim; d++) {{
     float out_sum = 0.0f;
     for (int n = 0; n < L; n++) {{
-        if (key_valid_arr[n]) {{
-            int key_z = key_z_arr[n];
-            int key_i = key_i_arr[n];
-            int key_j = key_j_arr[n];
-            float w = probs[n] * inv_denom;
-            int v_idx = ((((b * heads + h) * depth + key_z) * height + key_i) * width + key_j) * dim + d;
+        int key_lin = key_lin_arr[n];
+        if (key_lin >= 0) {{
+            float w = logits[n] * inv_denom;
+            int v_idx = (((b * heads + h) * (depth * height * width) + key_lin) * dim + d);
             out_sum += w * value[v_idx];
         }}
     }}
@@ -988,11 +978,7 @@ if (!causal_w) {{
 }}
 
 float logits[L];
-float probs[L];
-int key_z_arr[L];
-int key_i_arr[L];
-int key_j_arr[L];
-bool key_valid_arr[L];
+int key_lin_arr[L];
 
 float max_logit = -INFINITY;
 int neighbor_idx = 0;
@@ -1012,10 +998,7 @@ for (int kz = 0; kz < K; kz++) {{
                 ? (key_j >= 0 && key_j <= j && key_j < width)
                 : (key_j >= 0 && key_j < ej);
             bool valid = valid_z && valid_i && valid_j;
-            key_z_arr[neighbor_idx] = key_z;
-            key_i_arr[neighbor_idx] = key_i;
-            key_j_arr[neighbor_idx] = key_j;
-            key_valid_arr[neighbor_idx] = valid;
+            key_lin_arr[neighbor_idx] = valid ? ((key_z * height + key_i) * width + key_j) : -1;
             float score = -INFINITY;
             if (valid) {{
                 float sum = 0.0f;
@@ -1040,9 +1023,8 @@ for (int kz = 0; kz < K; kz++) {{
 
 float denom = 0.0f;
 for (int n = 0; n < L; n++) {{
-    float p = exp(logits[n] - max_logit);
-    probs[n] = p;
-    denom += p;
+    logits[n] = exp(logits[n] - max_logit);
+    denom += logits[n];
 }}
 float inv_denom = denom > 0.0f ? 1.0f / denom : 0.0f;
 
@@ -1053,12 +1035,10 @@ for (int d4 = 0; d4 < dim4; d4++) {{
     float acc2 = 0.0f;
     float acc3 = 0.0f;
     for (int n = 0; n < L; n++) {{
-        if (key_valid_arr[n]) {{
-            int key_z = key_z_arr[n];
-            int key_i = key_i_arr[n];
-            int key_j = key_j_arr[n];
-            float w = probs[n] * inv_denom;
-            int v_base = (((((b * heads + h) * depth + key_z) * height + key_i) * width + key_j) * dim + d0);
+        int key_lin = key_lin_arr[n];
+        if (key_lin >= 0) {{
+            float w = logits[n] * inv_denom;
+            int v_base = (((b * heads + h) * (depth * height * width) + key_lin) * dim + d0);
             acc0 += w * value[v_base];
             acc1 += w * value[v_base + 1];
             acc2 += w * value[v_base + 2];
@@ -1469,10 +1449,7 @@ if (!causal_w) {{
 }}
 
 float logits[L];
-float probs[L];
-int key_i_arr[L];
-int key_j_arr[L];
-bool key_valid_arr[L];
+int key_lin_arr[L];
 
 float max_logit = -INFINITY;
 int neighbor_idx = 0;
@@ -1487,9 +1464,7 @@ for (int ki = 0; ki < K; ki++) {{
             ? (key_j >= 0 && key_j <= j && key_j < width)
             : (key_j >= 0 && key_j < ej);
         bool valid = valid_i && valid_j;
-        key_i_arr[neighbor_idx] = key_i;
-        key_j_arr[neighbor_idx] = key_j;
-        key_valid_arr[neighbor_idx] = valid;
+        key_lin_arr[neighbor_idx] = valid ? (key_i * width + key_j) : -1;
         float score = -INFINITY;
         if (valid) {{
             float sum = 0.0f;
@@ -1508,20 +1483,18 @@ for (int ki = 0; ki < K; ki++) {{
 
 float denom = 0.0f;
 for (int n = 0; n < L; n++) {{
-    float p = exp(logits[n] - max_logit);
-    probs[n] = p;
-    denom += p;
+    logits[n] = exp(logits[n] - max_logit);
+    denom += logits[n];
 }}
 float inv_denom = denom > 0.0f ? 1.0f / denom : 0.0f;
 
 for (int d = 0; d < dim; d++) {{
     float out_sum = 0.0f;
     for (int n = 0; n < L; n++) {{
-        int key_i = key_i_arr[n];
-        int key_j = key_j_arr[n];
-        if (key_valid_arr[n]) {{
-            float w = probs[n] * inv_denom;
-            int v_idx = (((b * heads + h) * height + key_i) * width + key_j) * dim + d;
+        int key_lin = key_lin_arr[n];
+        if (key_lin >= 0) {{
+            float w = logits[n] * inv_denom;
+            int v_idx = (((b * heads + h) * (height * width) + key_lin) * dim + d);
             out_sum += w * value[v_idx];
         }}
     }}
@@ -1578,10 +1551,7 @@ if (!causal_w) {{
 }}
 
 float logits[L];
-float probs[L];
-int key_i_arr[L];
-int key_j_arr[L];
-bool key_valid_arr[L];
+int key_lin_arr[L];
 
 float max_logit = -INFINITY;
 int neighbor_idx = 0;
@@ -1596,9 +1566,7 @@ for (int ki = 0; ki < K; ki++) {{
             ? (key_j >= 0 && key_j <= j && key_j < width)
             : (key_j >= 0 && key_j < ej);
         bool valid = valid_i && valid_j;
-        key_i_arr[neighbor_idx] = key_i;
-        key_j_arr[neighbor_idx] = key_j;
-        key_valid_arr[neighbor_idx] = valid;
+        key_lin_arr[neighbor_idx] = valid ? (key_i * width + key_j) : -1;
         float score = -INFINITY;
         if (valid) {{
             float sum = 0.0f;
@@ -1621,9 +1589,8 @@ for (int ki = 0; ki < K; ki++) {{
 
 float denom = 0.0f;
 for (int n = 0; n < L; n++) {{
-    float p = exp(logits[n] - max_logit);
-    probs[n] = p;
-    denom += p;
+    logits[n] = exp(logits[n] - max_logit);
+    denom += logits[n];
 }}
 float inv_denom = denom > 0.0f ? 1.0f / denom : 0.0f;
 
@@ -1634,11 +1601,10 @@ for (int d4 = 0; d4 < dim4; d4++) {{
     float acc2 = 0.0f;
     float acc3 = 0.0f;
     for (int n = 0; n < L; n++) {{
-        int key_i = key_i_arr[n];
-        int key_j = key_j_arr[n];
-        if (key_valid_arr[n]) {{
-            float w = probs[n] * inv_denom;
-            int v_base = ((((b * heads + h) * height + key_i) * width + key_j) * dim + d0);
+        int key_lin = key_lin_arr[n];
+        if (key_lin >= 0) {{
+            float w = logits[n] * inv_denom;
+            int v_base = (((b * heads + h) * (height * width) + key_lin) * dim + d0);
             acc0 += w * value[v_base];
             acc1 += w * value[v_base + 1];
             acc2 += w * value[v_base + 2];

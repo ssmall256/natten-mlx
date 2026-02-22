@@ -114,6 +114,9 @@ Observed capabilities:
 26. Optimized experimental AV-backward fused kernels to use inverse-map `grad_v` accumulation (removing dense reverse-search in fused mode).
 27. Expanded vec4 forward coverage to split `na2d_qk` and split `na3d_qk` Metal kernels (in addition to prior 1D split vec4 paths).
 28. Expanded vec4 forward coverage to fused `na2d` and fused `na3d`, and added split `na1d_av` vec4 kernel path.
+29. Reduced fused 2D/3D per-thread storage by packing neighbor coordinates into linear indices and reusing in-place softmax-weight buffers (lower local-memory pressure, higher occupancy headroom).
+30. Added deterministic low-precision forward dtype routing heuristics: native fp16/bf16 by default, with an optional narrow benchmark-validated 2D bf16 fused fallback to fp32 math (`NATTEN_MLX_FORWARD_LOWP_FP32_ROUTE=1`).
+31. Added required forward perf guardrail CI gate for causal low-precision forward cases (`benchmarks/forward_perf_guardrail.py`).
 
 ### Deliberately Deferred
 

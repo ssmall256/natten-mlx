@@ -167,6 +167,16 @@ jobs:
           --min-speedup 1.20
           --github-annotations
 
+      - name: Run forward perf guardrail (required, causal + low precision)
+        run: >
+          uv run python benchmarks/forward_perf_guardrail.py
+          --output benchmarks/forward-guardrail.json
+          --warmup 3
+          --trials 8
+          --rounds 3
+          --min-speedup 1.10
+          --github-annotations
+
       - name: Run benchmark smoke (non-blocking warnings)
         run: >
           uv run python benchmarks/backend_smoke.py
@@ -183,4 +193,5 @@ jobs:
           path: |
             benchmarks/backend-smoke.json
             benchmarks/backward-guardrail.json
+            benchmarks/forward-guardrail.json
           if-no-files-found: error
