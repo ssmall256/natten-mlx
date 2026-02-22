@@ -33,5 +33,8 @@ version = {attr = "natten_mlx.version.__version__"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+natten_mlx = ["py.typed"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]

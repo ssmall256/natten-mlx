@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <iostream>
 #include <string>
 #include <typeinfo>
 
@@ -115,8 +116,10 @@ nb::object na2d_qk_forward(
                         q_arr, k_arr, ks, sh, sw, dh, dw, ch, cw, sc);
                     return nb::cast(out);
                 }
+            } catch (const std::exception& e) {
+                std::cerr << "natten_mlx: v2 split na2d_qk fell back to legacy: " << e.what() << std::endl;
             } catch (...) {
-                // Fall through to legacy
+                std::cerr << "natten_mlx: v2 split na2d_qk fell back to legacy (unknown error)" << std::endl;
             }
         }
     }
@@ -163,8 +166,10 @@ nb::object na2d_av_forward(
                         attn_arr, v_arr, ks, sh, sw, dh, dw, ch, cw);
                     return nb::cast(out);
                 }
+            } catch (const std::exception& e) {
+                std::cerr << "natten_mlx: v2 split na2d_av fell back to legacy: " << e.what() << std::endl;
             } catch (...) {
-                // Fall through to legacy
+                std::cerr << "natten_mlx: v2 split na2d_av fell back to legacy (unknown error)" << std::endl;
             }
         }
     }

@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 
@@ -318,8 +319,10 @@ nb::object na1d_forward(
                     natten_mlx::nanobind_metal_runtime::debug_set_last_route("na1d_forward", "v2_primitive");
                     return nb::cast(out);
                 }
+            } catch (const std::exception& e) {
+                std::cerr << "natten_mlx: v2 na1d_forward fell back to legacy: " << e.what() << std::endl;
             } catch (...) {
-                // Fall through to legacy paths
+                std::cerr << "natten_mlx: v2 na1d_forward fell back to legacy (unknown error)" << std::endl;
             }
         }
     }
@@ -392,8 +395,10 @@ nb::object na2d_forward(
                     natten_mlx::nanobind_metal_runtime::debug_set_last_route("na2d_forward", "v2_primitive");
                     return nb::cast(out);
                 }
+            } catch (const std::exception& e) {
+                std::cerr << "natten_mlx: v2 na2d_forward fell back to legacy: " << e.what() << std::endl;
             } catch (...) {
-                // Fall through to legacy paths
+                std::cerr << "natten_mlx: v2 na2d_forward fell back to legacy (unknown error)" << std::endl;
             }
         }
     }
@@ -488,8 +493,10 @@ nb::object na3d_forward(
                     natten_mlx::nanobind_metal_runtime::debug_set_last_route("na3d_forward", "v2_primitive");
                     return nb::cast(out);
                 }
+            } catch (const std::exception& e) {
+                std::cerr << "natten_mlx: v2 na3d_forward fell back to legacy: " << e.what() << std::endl;
             } catch (...) {
-                // Fall through to legacy paths
+                std::cerr << "natten_mlx: v2 na3d_forward fell back to legacy (unknown error)" << std::endl;
             }
         }
     }
@@ -562,8 +569,10 @@ nb::object na1d_backward(
                     return nb::cast(nb::make_tuple(
                         nb::cast(grads[0]), nb::cast(grads[1]), nb::cast(grads[2])));
                 }
+            } catch (const std::exception& e) {
+                std::cerr << "natten_mlx: v2 na1d_backward fell back to legacy: " << e.what() << std::endl;
             } catch (...) {
-                // Fall through to legacy paths
+                std::cerr << "natten_mlx: v2 na1d_backward fell back to legacy (unknown error)" << std::endl;
             }
         }
     }
@@ -642,8 +651,10 @@ nb::object na2d_backward(
                     return nb::cast(nb::make_tuple(
                         nb::cast(grads[0]), nb::cast(grads[1]), nb::cast(grads[2])));
                 }
+            } catch (const std::exception& e) {
+                std::cerr << "natten_mlx: v2 na2d_backward fell back to legacy: " << e.what() << std::endl;
             } catch (...) {
-                // Fall through to legacy paths
+                std::cerr << "natten_mlx: v2 na2d_backward fell back to legacy (unknown error)" << std::endl;
             }
         }
     }
@@ -726,8 +737,10 @@ nb::object na3d_backward(
                     return nb::cast(nb::make_tuple(
                         nb::cast(grads[0]), nb::cast(grads[1]), nb::cast(grads[2])));
                 }
+            } catch (const std::exception& e) {
+                std::cerr << "natten_mlx: v2 na3d_backward fell back to legacy: " << e.what() << std::endl;
             } catch (...) {
-                // Fall through to legacy paths
+                std::cerr << "natten_mlx: v2 na3d_backward fell back to legacy (unknown error)" << std::endl;
             }
         }
     }
