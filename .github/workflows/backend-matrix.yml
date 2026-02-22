@@ -203,12 +203,22 @@ jobs:
           --warn-threshold 1.25
           --github-warnings
 
+      - name: Compare nanobind vs fast_metal (warn-only)
+        run: >
+          uv run python benchmarks/nanobind_vs_fast_compare.py
+          --output benchmarks/nanobind-vs-fast.json
+          --warmup 3
+          --trials 8
+          --warn-threshold 0.97
+          --github-annotations
+
       - name: Upload benchmark artifact
         uses: actions/upload-artifact@v4
         with:
           name: backend-benchmark-smoke
           path: |
             benchmarks/backend-smoke.json
+            benchmarks/nanobind-vs-fast.json
             benchmarks/backward-guardrail.json
             benchmarks/forward-guardrail.json
           if-no-files-found: error

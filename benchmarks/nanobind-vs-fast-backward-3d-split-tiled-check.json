@@ -1,0 +1,100 @@
+{
+  "cases": {
+    "na1d_k7_s1_d1_noncausal": {
+      "fast_metal": {
+        "median_ms": 0.3206035034963861,
+        "round_median_ms": [
+          0.30666598468087614,
+          0.3345410223118961
+        ],
+        "stdev_ms": 0.013937518815509975
+      },
+      "nanobind": {
+        "median_ms": 1.1237289872951806,
+        "round_median_ms": [
+          1.1755409941542894,
+          1.0719169804360718
+        ],
+        "stdev_ms": 0.051812006859108806
+      },
+      "ratio_fast_over_nanobind": 0.28530322446169143
+    },
+    "na2d_k7x7_s1_d1_noncausal": {
+      "fast_metal": {
+        "median_ms": 0.6098750018281862,
+        "round_median_ms": [
+          0.6272919999901205,
+          0.5924580036662519
+        ],
+        "stdev_ms": 0.017416998161934316
+      },
+      "nanobind": {
+        "median_ms": 2.8088959952583537,
+        "round_median_ms": [
+          2.824124996550381,
+          2.793666993966326
+        ],
+        "stdev_ms": 0.015229001292027533
+      },
+      "ratio_fast_over_nanobind": 0.21712267127643925
+    },
+    "na3d_k3x3x3_s1_d1_noncausal": {
+      "fast_metal": {
+        "median_ms": 0.37483351479750127,
+        "round_median_ms": [
+          0.38400001358240843,
+          0.3656670160125941
+        ],
+        "stdev_ms": 0.009166498784907162
+      },
+      "nanobind": {
+        "median_ms": 1.4725414803251624,
+        "round_median_ms": [
+          1.4877499779686332,
+          1.4573329826816916
+        ],
+        "stdev_ms": 0.015208497643470764
+      },
+      "ratio_fast_over_nanobind": 0.25454869679781894
+    },
+    "split_na2d_qk_grad_k_k7_s1_d1_noncausal": {
+      "fast_metal": {
+        "median_ms": 0.19416649593040347,
+        "round_median_ms": [
+          0.1962080132216215,
+          0.19212497863918543
+        ],
+        "stdev_ms": 0.0020415172912180424
+      },
+      "nanobind": {
+        "median_ms": 0.38062450767029077,
+        "round_median_ms": [
+          0.386208004783839,
+          0.37504101055674255
+        ],
+        "stdev_ms": 0.005583497113548219
+      },
+      "ratio_fast_over_nanobind": 0.5101261007044684
+    },
+    "split_na3d_qk_grad_k_k3_s1_d1_noncausal": {
+      "fast_metal": {
+        "median_ms": 0.16572950698900968,
+        "round_median_ms": [
+          0.16979200881905854,
+          0.16166700515896082
+        ],
+        "stdev_ms": 0.004062501830048859
+      },
+      "nanobind": {
+        "median_ms": 0.26762498600874096,
+        "round_median_ms": [
+          0.28437498258426785,
+          0.25087498943321407
+        ],
+        "stdev_ms": 0.016749996575526893
+      },
+      "ratio_fast_over_nanobind": 0.6192602172937498
+    }
+  },
+  "warn_threshold": 0.8
+}

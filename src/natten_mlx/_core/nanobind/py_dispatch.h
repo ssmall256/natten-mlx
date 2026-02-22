@@ -5,6 +5,8 @@
 
 #include <nanobind/nanobind.h>
 
+#include "metal_runtime.h"
+
 namespace nb = nanobind;
 
 namespace natten_mlx::nanobind_backend {
@@ -38,6 +40,7 @@ inline bool use_native_runtime() {
 
 template <typename... Args>
 inline nb::object call_backend(const char* name, Args&&... args) {
+    natten_mlx::nanobind_metal_runtime::debug_inc_python_bridge_calls();
     return backend_module().attr(name)(std::forward<Args>(args)...);
 }
 

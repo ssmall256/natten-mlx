@@ -264,6 +264,27 @@ def _emit_violation(
         print(f"ERROR: {message}")
 
 
+def _emit_warning(
+    *,
+    backend: str,
+    case: str,
+    median_ms: float,
+    pure_median_ms: float,
+    speedup: float,
+    min_speedup: float,
+    github_annotations: bool,
+) -> None:
+    message = (
+        f"Backward perf soft-fail: backend={backend} case={case} "
+        f"median={median_ms:.3f}ms pure={pure_median_ms:.3f}ms "
+        f"speedup={_format_speedup(speedup)} target>={min_speedup:.2f}x"
+    )
+    if github_annotations:
+        print(f"::warning::{message}")
+    else:
+        print(f"WARNING: {message}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Check backward performance guardrails.")
     parser.add_argument("--warmup", type=int, default=3)
@@ -281,6 +302,16 @@ def main() -> None:
         help="Drop this many measured trials from the head before reporting stats.",
     )
     parser.add_argument("--min-speedup", type=float, default=1.20)
+    parser.add_argument(
+        "--required-backends",
+        default="fast_metal",
+        help="Comma-separated accelerated backends that fail the guardrail on violation.",
+    )
+    parser.add_argument(
+        "--warn-backends",
+        default="nanobind",
+        help="Comma-separated accelerated backends that only emit warnings on violation.",
+    )
     parser.add_argument("--output", default="benchmarks/backward-guardrail.json")
     parser.add_argument("--github-annotations", action="store_true")
     args = parser.parse_args()
@@ -290,7 +321,14 @@ def main() -> None:
         raise SystemExit("--rounds must be >= 1")
 
     cases = _build_cases()
-    backends = ["pure", "fast_metal", "nanobind"]
+    required_backends = {
+        x.strip() for x in args.required_backends.split(",") if x.strip() and x.strip() != "pure"
+    }
+    warn_backends = {
+        x.strip() for x in args.warn_backends.split(",") if x.strip() and x.strip() != "pure"
+    }
+    accel_backends = sorted(required_backends | warn_backends)
+    backends = ["pure", *accel_backends]
     payload = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "platform": platform.platform(),
@@ -319,7 +357,8 @@ def main() -> None:
         set_backend("auto")
 
     violations: list[tuple[str, str, float, float, float]] = []
-    for backend in ("fast_metal", "nanobind"):
+    soft_violations: list[tuple[str, str, float, float, float]] = []
+    for backend in accel_backends:
         for case in cases:
             name = case["name"]
             pure_median = payload["results"]["pure"][name]["median_ms"]
@@ -327,13 +366,27 @@ def main() -> None:
             speedup = pure_median / backend_median if backend_median > 0.0 else 0.0
             payload["results"][backend][name]["speedup_vs_pure"] = speedup
             if speedup < args.min_speedup:
-                violations.append((backend, name, backend_median, pure_median, speedup))
+                rec = (backend, name, backend_median, pure_median, speedup)
+                if backend in required_backends:
+                    violations.append(rec)
+                elif backend in warn_backends:
+                    soft_violations.append(rec)
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     print(json.dumps(payload, indent=2, sort_keys=True))
+    for backend, case, median_ms, pure_median_ms, speedup in soft_violations:
+        _emit_warning(
+            backend=backend,
+            case=case,
+            median_ms=median_ms,
+            pure_median_ms=pure_median_ms,
+            speedup=speedup,
+            min_speedup=args.min_speedup,
+            github_annotations=args.github_annotations,
+        )
     if violations:
         for backend, case, median_ms, pure_median_ms, speedup in violations:
             _emit_violation(

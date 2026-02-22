@@ -218,6 +218,12 @@ NB_MODULE(_nanobind_ext, m) {
     m.def("_debug_clear_last_routes", []() {
         natten_mlx::nanobind_metal_runtime::debug_clear_last_routes();
     });
+    m.def("_debug_get_last_kernel", [](const std::string& op) {
+        return natten_mlx::nanobind_metal_runtime::debug_get_last_kernel(op);
+    });
+    m.def("_debug_clear_last_kernels", []() {
+        natten_mlx::nanobind_metal_runtime::debug_clear_last_kernels();
+    });
     m.def("_debug_force_fused_failure", [](bool enabled) {
         natten_mlx::nanobind_metal_runtime::debug_force_fused_failure(enabled);
     });
@@ -229,5 +235,11 @@ NB_MODULE(_nanobind_ext, m) {
     });
     m.def("_debug_clear_python_bridge_calls", []() {
         natten_mlx::nanobind_metal_runtime::debug_clear_python_bridge_calls();
+    });
+    m.def("_debug_get_launch_metrics", []() {
+        return natten_mlx::nanobind_metal_runtime::debug_get_launch_metrics();
+    });
+    m.def("_debug_clear_launch_metrics", []() {
+        natten_mlx::nanobind_metal_runtime::debug_clear_launch_metrics();
     });
 }

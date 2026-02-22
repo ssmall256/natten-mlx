@@ -1,0 +1,541 @@
+{
+  "cases": {
+    "na1d_k7_s1_d1_noncausal": {
+      "best": {
+        "median_ms": 1.0236252419417724,
+        "mode": "tiled",
+        "threadgroup": [
+          128,
+          1,
+          1
+        ]
+      },
+      "results": [
+        {
+          "median_ms": 1.87045824714005,
+          "mode": "atomic",
+          "threadgroup": [
+            96,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.1028022490791045,
+          "mode": "atomic",
+          "threadgroup": [
+            128,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.6729690032661892,
+          "mode": "atomic",
+          "threadgroup": [
+            160,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.848291743954178,
+          "mode": "atomic",
+          "threadgroup": [
+            192,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.6426667425548658,
+          "mode": "atomic",
+          "threadgroup": [
+            256,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.7812397636589594,
+          "mode": "tiled",
+          "threadgroup": [
+            96,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.0236252419417724,
+          "mode": "tiled",
+          "threadgroup": [
+            128,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.0847187513718382,
+          "mode": "tiled",
+          "threadgroup": [
+            160,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.095052000891883,
+          "mode": "tiled",
+          "threadgroup": [
+            192,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.0381147440057248,
+          "mode": "tiled",
+          "threadgroup": [
+            256,
+            1,
+            1
+          ]
+        }
+      ]
+    },
+    "na2d_k7x7_s1_d1_noncausal": {
+      "best": {
+        "median_ms": 2.0007499915664084,
+        "mode": "tiled",
+        "threadgroup": [
+          96,
+          1,
+          1
+        ]
+      },
+      "results": [
+        {
+          "median_ms": 5.364864999137353,
+          "mode": "atomic",
+          "threadgroup": [
+            96,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 4.869437740126159,
+          "mode": "atomic",
+          "threadgroup": [
+            128,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 6.10535399755463,
+          "mode": "atomic",
+          "threadgroup": [
+            160,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 5.1360832585487515,
+          "mode": "atomic",
+          "threadgroup": [
+            192,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 3.542072998243384,
+          "mode": "atomic",
+          "threadgroup": [
+            256,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 2.0007499915664084,
+          "mode": "tiled",
+          "threadgroup": [
+            96,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 2.007073002459947,
+          "mode": "tiled",
+          "threadgroup": [
+            128,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 2.084489504341036,
+          "mode": "tiled",
+          "threadgroup": [
+            160,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 2.0267395084374584,
+          "mode": "tiled",
+          "threadgroup": [
+            192,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 2.0753539938596077,
+          "mode": "tiled",
+          "threadgroup": [
+            256,
+            1,
+            1
+          ]
+        }
+      ]
+    },
+    "na3d_k3x3x3_s1_d1_noncausal": {
+      "best": {
+        "median_ms": 1.2425205059116706,
+        "mode": "tiled",
+        "threadgroup": [
+          256,
+          1,
+          1
+        ]
+      },
+      "results": [
+        {
+          "median_ms": 1.831427012803033,
+          "mode": "atomic",
+          "threadgroup": [
+            96,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.7073440030799247,
+          "mode": "atomic",
+          "threadgroup": [
+            128,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.9100417484878562,
+          "mode": "atomic",
+          "threadgroup": [
+            160,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.7370204950566404,
+          "mode": "atomic",
+          "threadgroup": [
+            192,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.7967605017474853,
+          "mode": "atomic",
+          "threadgroup": [
+            256,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.3318750061444007,
+          "mode": "tiled",
+          "threadgroup": [
+            96,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.295582995226141,
+          "mode": "tiled",
+          "threadgroup": [
+            128,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.26284400903387,
+          "mode": "tiled",
+          "threadgroup": [
+            160,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.3233122517704032,
+          "mode": "tiled",
+          "threadgroup": [
+            192,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.2425205059116706,
+          "mode": "tiled",
+          "threadgroup": [
+            256,
+            1,
+            1
+          ]
+        }
+      ]
+    },
+    "split_na2d_qk_grad_k_k7_s1_d1_noncausal": {
+      "best": {
+        "median_ms": 0.39139574801083654,
+        "mode": "tiled",
+        "threadgroup": [
+          96,
+          1,
+          1
+        ]
+      },
+      "results": [
+        {
+          "median_ms": 1.1786355025833473,
+          "mode": "atomic",
+          "threadgroup": [
+            96,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.0124167529284023,
+          "mode": "atomic",
+          "threadgroup": [
+            128,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.3623337508761324,
+          "mode": "atomic",
+          "threadgroup": [
+            160,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.2358852472971193,
+          "mode": "atomic",
+          "threadgroup": [
+            192,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 1.0462920108693652,
+          "mode": "atomic",
+          "threadgroup": [
+            256,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 0.39139574801083654,
+          "mode": "tiled",
+          "threadgroup": [
+            96,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 0.42687523819040507,
+          "mode": "tiled",
+          "threadgroup": [
+            128,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 0.4007184907095507,
+          "mode": "tiled",
+          "threadgroup": [
+            160,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 0.3998437459813431,
+          "mode": "tiled",
+          "threadgroup": [
+            192,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 0.4005624941783026,
+          "mode": "tiled",
+          "threadgroup": [
+            256,
+            1,
+            1
+          ]
+        }
+      ]
+    },
+    "split_na3d_qk_grad_k_k3_s1_d1_noncausal": {
+      "best": {
+        "median_ms": 0.27313525788486004,
+        "mode": "tiled",
+        "threadgroup": [
+          256,
+          1,
+          1
+        ]
+      },
+      "results": [
+        {
+          "median_ms": 0.4910102506983094,
+          "mode": "atomic",
+          "threadgroup": [
+            96,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 0.4416977462824434,
+          "mode": "atomic",
+          "threadgroup": [
+            128,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 0.5277392410789616,
+          "mode": "atomic",
+          "threadgroup": [
+            160,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 0.47445824748137966,
+          "mode": "atomic",
+          "threadgroup": [
+            192,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 0.445853998826351,
+          "mode": "atomic",
+          "threadgroup": [
+            256,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 0.28699999529635534,
+          "mode": "tiled",
+          "threadgroup": [
+            96,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 0.29358325264183804,
+          "mode": "tiled",
+          "threadgroup": [
+            128,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 0.3092190017923713,
+          "mode": "tiled",
+          "threadgroup": [
+            160,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 0.28958325856365263,
+          "mode": "tiled",
+          "threadgroup": [
+            192,
+            1,
+            1
+          ]
+        },
+        {
+          "median_ms": 0.27313525788486004,
+          "mode": "tiled",
+          "threadgroup": [
+            256,
+            1,
+            1
+          ]
+        }
+      ]
+    }
+  },
+  "recommended_mode_table": {
+    "('na1d_qk_backward', 'fp32', 'tiny', 'd32', 'k_mid', 'c0', 's1')": "tiled",
+    "('na2d_qk_backward', 'fp32', 'small', 'd32', 'k_mid', 'c0', 's1')": "tiled",
+    "('na3d_qk_backward', 'fp32', 'medium', 'd16', 'k_small', 'c0', 's1')": "tiled"
+  },
+  "recommended_threadgroup_table": {
+    "('na1d_qk_backward', 'fp32', 'tiny', 'd32', 'k_mid', 'c0', 's1')": [
+      128,
+      1,
+      1
+    ],
+    "('na2d_qk_backward', 'fp32', 'small', 'd32', 'k_mid', 'c0', 's1')": [
+      96,
+      1,
+      1
+    ],
+    "('na3d_qk_backward', 'fp32', 'medium', 'd16', 'k_small', 'c0', 's1')": [
+      256,
+      1,
+      1
+    ]
+  }
+}

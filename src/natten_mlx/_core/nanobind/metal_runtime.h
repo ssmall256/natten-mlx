@@ -173,6 +173,26 @@ nb::object na1d_fused_backward_attn(
     const nb::object& dilation,
     const nb::object& is_causal,
     const nb::object& scale);
+nb::object na2d_fused_backward_attn(
+    const nb::object& q,
+    const nb::object& k,
+    const nb::object& v,
+    const nb::object& grad_out,
+    const nb::object& kernel_size,
+    const nb::object& stride,
+    const nb::object& dilation,
+    const nb::object& is_causal,
+    const nb::object& scale);
+nb::object na3d_fused_backward_attn(
+    const nb::object& q,
+    const nb::object& k,
+    const nb::object& v,
+    const nb::object& grad_out,
+    const nb::object& kernel_size,
+    const nb::object& stride,
+    const nb::object& dilation,
+    const nb::object& is_causal,
+    const nb::object& scale);
 nb::object na1d_fused_backward_qk(
     const nb::object& q,
     const nb::object& k,
@@ -184,11 +204,24 @@ nb::object na1d_fused_backward_qk(
     const nb::object& scale);
 nb::object na1d_fused_backward_v(
     const nb::object& attn,
+    const nb::object& v,
     const nb::object& grad_out,
     const nb::object& kernel_size,
     const nb::object& stride,
     const nb::object& dilation,
     const nb::object& is_causal);
+nb::object na1d_fused_backward_qkv_from_softmax(
+    const nb::object& q,
+    const nb::object& k,
+    const nb::object& v,
+    const nb::object& attn,
+    const nb::object& grad_attn,
+    const nb::object& grad_out,
+    const nb::object& kernel_size,
+    const nb::object& stride,
+    const nb::object& dilation,
+    const nb::object& is_causal,
+    const nb::object& scale);
 
 nb::object na2d_fused_backward_qk(
     const nb::object& q,
@@ -199,8 +232,31 @@ nb::object na2d_fused_backward_qk(
     const nb::object& dilation,
     const nb::object& is_causal,
     const nb::object& scale);
+nb::object na2d_fused_backward_qk_from_softmax(
+    const nb::object& q,
+    const nb::object& k,
+    const nb::object& attn,
+    const nb::object& grad_attn,
+    const nb::object& kernel_size,
+    const nb::object& stride,
+    const nb::object& dilation,
+    const nb::object& is_causal,
+    const nb::object& scale);
+nb::object na2d_fused_backward_qkv_from_softmax(
+    const nb::object& q,
+    const nb::object& k,
+    const nb::object& v,
+    const nb::object& attn,
+    const nb::object& grad_attn,
+    const nb::object& grad_out,
+    const nb::object& kernel_size,
+    const nb::object& stride,
+    const nb::object& dilation,
+    const nb::object& is_causal,
+    const nb::object& scale);
 nb::object na2d_fused_backward_v(
     const nb::object& attn,
+    const nb::object& v,
     const nb::object& grad_out,
     const nb::object& kernel_size,
     const nb::object& stride,
@@ -216,8 +272,31 @@ nb::object na3d_fused_backward_qk(
     const nb::object& dilation,
     const nb::object& is_causal,
     const nb::object& scale);
+nb::object na3d_fused_backward_qk_from_softmax(
+    const nb::object& q,
+    const nb::object& k,
+    const nb::object& attn,
+    const nb::object& grad_attn,
+    const nb::object& kernel_size,
+    const nb::object& stride,
+    const nb::object& dilation,
+    const nb::object& is_causal,
+    const nb::object& scale);
+nb::object na3d_fused_backward_qkv_from_softmax(
+    const nb::object& q,
+    const nb::object& k,
+    const nb::object& v,
+    const nb::object& attn,
+    const nb::object& grad_attn,
+    const nb::object& grad_out,
+    const nb::object& kernel_size,
+    const nb::object& stride,
+    const nb::object& dilation,
+    const nb::object& is_causal,
+    const nb::object& scale);
 nb::object na3d_fused_backward_v(
     const nb::object& attn,
+    const nb::object& v,
     const nb::object& grad_out,
     const nb::object& kernel_size,
     const nb::object& stride,
@@ -227,6 +306,8 @@ nb::object na3d_fused_backward_v(
 void debug_set_last_route(const std::string& op, const std::string& route);
 std::string debug_get_last_route(const std::string& op);
 void debug_clear_last_routes();
+std::string debug_get_last_kernel(const std::string& op);
+void debug_clear_last_kernels();
 void debug_force_fused_failure(bool enabled);
 void debug_force_split_failure(bool enabled);
 bool debug_forced_fused_failure();
@@ -235,5 +316,7 @@ bool debug_forced_split_failure();
 void debug_inc_python_bridge_calls();
 int debug_get_python_bridge_calls();
 void debug_clear_python_bridge_calls();
+nb::dict debug_get_launch_metrics();
+void debug_clear_launch_metrics();
 
 }  // namespace natten_mlx::nanobind_metal_runtime

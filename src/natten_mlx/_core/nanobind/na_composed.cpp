@@ -1,5 +1,11 @@
 #include "na_composed.h"
 
+#include <cstdlib>
+#include <stdexcept>
+#include <string>
+
+#include <mlx/array.h>
+#include <mlx/ops.h>
 #include <nanobind/stl/tuple.h>
 
 #include "metal_runtime.h"
@@ -10,22 +16,155 @@
 #include "py_dispatch.h"
 
 namespace nb = nanobind;
+namespace mx = mlx::core;
 using namespace nb::literals;
 
 namespace {
 
+bool is_sequence(const nb::object& obj) {
+    return nb::isinstance<nb::tuple>(obj) || nb::isinstance<nb::list>(obj);
+}
+
+int scalar_or_index_int(const nb::object& obj, size_t idx) {
+    if (!is_sequence(obj)) {
+        return nb::cast<int>(obj);
+    }
+    nb::sequence seq = nb::cast<nb::sequence>(obj);
+    if (idx >= static_cast<size_t>(nb::len(seq))) {
+        throw std::runtime_error("invalid parameter rank");
+    }
+    return nb::cast<int>(seq[idx]);
+}
+
+bool scalar_or_index_bool(const nb::object& obj, size_t idx) {
+    if (!is_sequence(obj)) {
+        return nb::cast<bool>(obj);
+    }
+    nb::sequence seq = nb::cast<nb::sequence>(obj);
+    if (idx >= static_cast<size_t>(nb::len(seq))) {
+        throw std::runtime_error("invalid parameter rank");
+    }
+    return nb::cast<bool>(seq[idx]);
+}
+
+enum class SplitForwardDtypeMode {
+    Auto,
+    Native,
+    FP32,
+};
+
+SplitForwardDtypeMode parse_split_forward_dtype_mode() {
+    const char* value = std::getenv("NATTEN_NANOBIND_SPLIT_FWD_DTYPE_MODE");
+    if (value == nullptr) {
+        return SplitForwardDtypeMode::Auto;
+    }
+    std::string mode(value);
+    if (mode == "native") {
+        return SplitForwardDtypeMode::Native;
+    }
+    if (mode == "fp32") {
+        return SplitForwardDtypeMode::FP32;
+    }
+    return SplitForwardDtypeMode::Auto;
+}
+
+bool is_low_precision_dtype(mx::Dtype dtype) {
+    return dtype == mx::float16 || dtype == mx::bfloat16;
+}
+
+bool prefer_fp32_split_pipeline(
+    const nb::object& q,
+    const nb::object& stride,
+    const nb::object& dilation,
+    const nb::object& is_causal) {
+    (void)stride;
+    (void)dilation;
+    (void)is_causal;
+    SplitForwardDtypeMode mode = parse_split_forward_dtype_mode();
+    if (mode == SplitForwardDtypeMode::Native) {
+        return false;
+    }
+    mx::array q_arr = nb::cast<mx::array>(q);
+    if (!is_low_precision_dtype(q_arr.dtype())) {
+        return false;
+    }
+    if (mode == SplitForwardDtypeMode::FP32) {
+        return true;
+    }
+    // Auto mode defaults to native low-precision split kernels.
+    return false;
+}
+
+enum class FusedForwardMode {
+    Auto,
+    Fused,
+    Split,
+};
+
+FusedForwardMode parse_fused_forward_mode(const char* env_name) {
+    const char* value = std::getenv(env_name);
+    if (value == nullptr) {
+        return FusedForwardMode::Auto;
+    }
+    std::string mode(value);
+    if (mode == "fused") {
+        return FusedForwardMode::Fused;
+    }
+    if (mode == "split") {
+        return FusedForwardMode::Split;
+    }
+    return FusedForwardMode::Auto;
+}
+
+bool prefer_split_forward_2d_fastpath(
+    const nb::object& q,
+    const nb::object& kernel_size,
+    const nb::object& stride,
+    const nb::object& dilation,
+    const nb::object& is_causal) {
+    FusedForwardMode mode = parse_fused_forward_mode("NATTEN_NANOBIND_FUSED_FWD_2D_MODE");
+    if (mode == FusedForwardMode::Fused) {
+        return false;
+    }
+    if (mode == FusedForwardMode::Split) {
+        return true;
+    }
+    mx::array q_arr = nb::cast<mx::array>(q);
+    int ih = q_arr.shape(1);
+    int iw = q_arr.shape(2);
+    int k = scalar_or_index_int(kernel_size, 0);
+    int sh = scalar_or_index_int(stride, 0);
+    int sw = scalar_or_index_int(stride, 1);
+    int dh = scalar_or_index_int(dilation, 0);
+    int dw = scalar_or_index_int(dilation, 1);
+    bool ch = scalar_or_index_bool(is_causal, 0);
+    bool cw = scalar_or_index_bool(is_causal, 1);
+    int d = q_arr.shape(4);
+    int causal_rank = (ch ? 1 : 0) + (cw ? 1 : 0);
+    bool unit_step = (sh == 1 && sw == 1 && dh == 1 && dw == 1);
+    int tokens = ih * iw;
+    // Keep fused eligible for the optimized bf16 strided causal-H kernel family.
+    if (q_arr.dtype() == mx::bfloat16 && ch && !cw && d == 16 && k == 7 && sh == 2 && sw == 1 &&
+        dh == 1 && dw == 2) {
+        return false;
+    }
+    return k >= 7 && tokens >= 256 && (causal_rank > 0 || !unit_step || tokens >= 512);
+}
+
 nb::object softmax_last_dim(const nb::object& x) {
-    return natten_mlx::nanobind_backend::mx_module().attr("softmax")(x, "axis"_a = -1);
+    mx::array xa = nb::cast<mx::array>(x);
+    return nb::cast(mx::softmax(xa, -1));
 }
 
 nb::object grad_logits_from_softmax(
     const nb::object& attn,
     const nb::object& grad_attn) {
-    nb::object mx = natten_mlx::nanobind_backend::mx_module();
-    nb::object prod = mx.attr("multiply")(grad_attn, attn);
-    nb::object inner = mx.attr("sum")(prod, "axis"_a = -1, "keepdims"_a = true);
-    nb::object centered = mx.attr("subtract")(grad_attn, inner);
-    return mx.attr("multiply")(attn, centered);
+    mx::array attn_arr = nb::cast<mx::array>(attn);
+    mx::array grad_attn_arr = nb::cast<mx::array>(grad_attn);
+    mx::array prod = mx::multiply(grad_attn_arr, attn_arr);
+    mx::array inner = mx::sum(prod, -1, true);
+    mx::array centered = mx::subtract(grad_attn_arr, inner);
+    return nb::cast(mx::multiply(attn_arr, centered));
 }
 
 nb::object backward_composed(
@@ -109,9 +248,26 @@ nb::object forward_split_composed(
         const nb::object&,
         const nb::object&,
         const nb::object&)) {
-    nb::object logits = qk_forward(q, k, kernel_size, stride, dilation, is_causal, scale);
+    nb::object mx_mod = natten_mlx::nanobind_backend::mx_module();
+    nb::object qx = q;
+    nb::object kx = k;
+    nb::object vx = v;
+    bool cast_back_out = false;
+    if (prefer_fp32_split_pipeline(q, stride, dilation, is_causal)) {
+        nb::object fp32 = mx_mod.attr("float32");
+        qx = q.attr("astype")(fp32);
+        kx = k.attr("astype")(fp32);
+        vx = v.attr("astype")(fp32);
+        cast_back_out = true;
+    }
+
+    nb::object logits = qk_forward(qx, kx, kernel_size, stride, dilation, is_causal, scale);
     nb::object attn = softmax_last_dim(logits);
-    return av_forward(attn, v, kernel_size, stride, dilation, is_causal);
+    nb::object out = av_forward(attn, vx, kernel_size, stride, dilation, is_causal);
+    if (cast_back_out) {
+        out = out.attr("astype")(v.attr("dtype"));
+    }
+    return out;
 }
 
 }  // namespace
@@ -164,6 +320,24 @@ nb::object na2d_forward(
     const nb::object& dilation,
     const nb::object& is_causal,
     const nb::object& scale) {
+    if (prefer_split_forward_2d_fastpath(q, kernel_size, stride, dilation, is_causal)) {
+        try {
+            nb::object out = forward_split_composed(
+                q,
+                k,
+                v,
+                kernel_size,
+                stride,
+                dilation,
+                is_causal,
+                scale,
+                natten_mlx::nanobind_split_forward::na2d_qk_forward,
+                natten_mlx::nanobind_split_forward::na2d_av_forward);
+            natten_mlx::nanobind_metal_runtime::debug_set_last_route("na2d_forward", "split");
+            return out;
+        } catch (...) {
+        }
+    }
     try {
         nb::object out = natten_mlx::nanobind_fused_forward::na2d_forward(
             q, k, v, kernel_size, stride, dilation, is_causal, scale);

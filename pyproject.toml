@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel", "nanobind>=2.0.0", "cmake>=3.27"]
+requires = ["setuptools>=68.0", "wheel", "nanobind>=2.10.2,<2.11", "cmake>=3.27"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -25,7 +25,7 @@ classifiers = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
-nanobind = ["nanobind>=2.0.0"]
+nanobind = ["nanobind>=2.10.2,<2.11"]
 
 [tool.setuptools.dynamic]
 version = {attr = "natten_mlx.version.__version__"}

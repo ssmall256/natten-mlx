@@ -117,6 +117,7 @@ uv run python benchmarks/forward_perf_guardrail.py --output benchmarks/forward-g
 ## Final Performance Table
 
 Snapshot generated from this repo on:
+- Generated at (UTC): `2026-02-22T15:17:00.763383+00:00`
 - Platform: `macOS-26.3-arm64-arm-64bit`
 - Python: `3.11.11`
 - Command:
@@ -131,18 +132,18 @@ Median latency table (ms, lower is better; includes both noncausal and causal co
 
 | Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal speedup vs pure | nanobind speedup vs pure |
 |---|---:|---:|---:|---:|---:|---:|
-| `na1d_k7_s1_d1_noncausal` | `forward` | 0.435 | 0.181 | 0.188 | 2.40x | 2.32x |
-| `na1d_k7_s1_d1_noncausal` | `backward` | 0.500 | 0.283 | 0.303 | 1.77x | 1.65x |
-| `na1d_k7_s1_d1_causal` | `forward` | 0.360 | 0.164 | 0.176 | 2.19x | 2.05x |
-| `na1d_k7_s1_d1_causal` | `backward` | 0.428 | 0.286 | 0.309 | 1.50x | 1.38x |
-| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.782 | 0.260 | 0.280 | 6.85x | 6.37x |
-| `na2d_k7x7_s1_d1_noncausal` | `backward` | 2.110 | 0.484 | 0.498 | 4.36x | 4.24x |
-| `na2d_k7x7_s1_d1_causal_h` | `forward` | 1.425 | 0.270 | 0.282 | 5.27x | 5.06x |
-| `na2d_k7x7_s1_d1_causal_h` | `backward` | 1.813 | 0.482 | 0.501 | 3.76x | 3.62x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.823 | 0.190 | 0.196 | 4.34x | 4.21x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.959 | 0.328 | 0.353 | 2.92x | 2.72x |
-| `na3d_k3x3x3_s1_d1_causal_d` | `forward` | 0.818 | 0.191 | 0.187 | 4.28x | 4.37x |
-| `na3d_k3x3x3_s1_d1_causal_d` | `backward` | 0.942 | 0.337 | 0.363 | 2.80x | 2.59x |
+| `na1d_k7_s1_d1_noncausal` | `forward` | 0.838 | 0.173 | 0.174 | 4.85x | 4.80x |
+| `na1d_k7_s1_d1_noncausal` | `backward` | 0.919 | 0.279 | 0.649 | 3.29x | 1.42x |
+| `na1d_k7_s1_d1_causal` | `forward` | 0.703 | 0.172 | 0.175 | 4.09x | 4.01x |
+| `na1d_k7_s1_d1_causal` | `backward` | 0.874 | 0.272 | 0.591 | 3.21x | 1.48x |
+| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.722 | 0.260 | 0.294 | 6.63x | 5.86x |
+| `na2d_k7x7_s1_d1_noncausal` | `backward` | 1.905 | 0.469 | 0.905 | 4.07x | 2.10x |
+| `na2d_k7x7_s1_d1_causal_h` | `forward` | 1.421 | 0.260 | 0.392 | 5.47x | 3.62x |
+| `na2d_k7x7_s1_d1_causal_h` | `backward` | 1.870 | 0.479 | 1.808 | 3.90x | 1.03x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.834 | 0.184 | 0.286 | 4.53x | 2.91x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.981 | 0.316 | 0.697 | 3.10x | 1.41x |
+| `na3d_k3x3x3_s1_d1_causal_d` | `forward` | 0.862 | 0.171 | 0.177 | 5.05x | 4.86x |
+| `na3d_k3x3x3_s1_d1_causal_d` | `backward` | 0.946 | 0.326 | 0.765 | 2.90x | 1.24x |
 
 Raw artifacts are written to:
 - `benchmarks/final-perf.json`
