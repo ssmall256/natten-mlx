@@ -131,18 +131,18 @@ Median latency table (ms, lower is better; includes both noncausal and causal co
 
 | Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal speedup vs pure | nanobind speedup vs pure |
 |---|---:|---:|---:|---:|---:|---:|
-| `na1d_k7_s1_d1_noncausal` | `forward` | 0.423 | 0.181 | 0.172 | 2.34x | 2.46x |
-| `na1d_k7_s1_d1_noncausal` | `backward` | 0.513 | 0.298 | 0.295 | 1.72x | 1.74x |
-| `na1d_k7_s1_d1_causal` | `forward` | 0.373 | 0.165 | 0.164 | 2.26x | 2.27x |
-| `na1d_k7_s1_d1_causal` | `backward` | 0.441 | 0.290 | 0.298 | 1.52x | 1.48x |
-| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.759 | 0.261 | 0.269 | 6.73x | 6.53x |
-| `na2d_k7x7_s1_d1_noncausal` | `backward` | 2.118 | 0.473 | 0.493 | 4.48x | 4.29x |
-| `na2d_k7x7_s1_d1_causal_h` | `forward` | 1.538 | 0.262 | 0.268 | 5.88x | 5.73x |
-| `na2d_k7x7_s1_d1_causal_h` | `backward` | 1.934 | 0.491 | 0.497 | 3.94x | 3.89x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.853 | 0.194 | 0.206 | 4.40x | 4.15x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 1.010 | 0.344 | 0.343 | 2.94x | 2.94x |
-| `na3d_k3x3x3_s1_d1_causal_d` | `forward` | 0.851 | 0.179 | 0.193 | 4.76x | 4.41x |
-| `na3d_k3x3x3_s1_d1_causal_d` | `backward` | 0.975 | 0.342 | 0.358 | 2.85x | 2.72x |
+| `na1d_k7_s1_d1_noncausal` | `forward` | 0.435 | 0.181 | 0.188 | 2.40x | 2.32x |
+| `na1d_k7_s1_d1_noncausal` | `backward` | 0.500 | 0.283 | 0.303 | 1.77x | 1.65x |
+| `na1d_k7_s1_d1_causal` | `forward` | 0.360 | 0.164 | 0.176 | 2.19x | 2.05x |
+| `na1d_k7_s1_d1_causal` | `backward` | 0.428 | 0.286 | 0.309 | 1.50x | 1.38x |
+| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.782 | 0.260 | 0.280 | 6.85x | 6.37x |
+| `na2d_k7x7_s1_d1_noncausal` | `backward` | 2.110 | 0.484 | 0.498 | 4.36x | 4.24x |
+| `na2d_k7x7_s1_d1_causal_h` | `forward` | 1.425 | 0.270 | 0.282 | 5.27x | 5.06x |
+| `na2d_k7x7_s1_d1_causal_h` | `backward` | 1.813 | 0.482 | 0.501 | 3.76x | 3.62x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.823 | 0.190 | 0.196 | 4.34x | 4.21x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.959 | 0.328 | 0.353 | 2.92x | 2.72x |
+| `na3d_k3x3x3_s1_d1_causal_d` | `forward` | 0.818 | 0.191 | 0.187 | 4.28x | 4.37x |
+| `na3d_k3x3x3_s1_d1_causal_d` | `backward` | 0.942 | 0.337 | 0.363 | 2.80x | 2.59x |
 
 Raw artifacts are written to:
 - `benchmarks/final-perf.json`
@@ -170,6 +170,11 @@ Nanobind tier resolution order:
 2. compiled in-tree extension: `natten_mlx._core._nanobind_ext`
 3. in-tree Python fallback: `natten_mlx._core._nanobind_impl`
 
+Nanobind availability semantics:
+- `natten_mlx.has_nanobind()` reports compiled-extension availability only.
+- If compiled extension is unavailable and backend is explicitly set to `nanobind`,
+  in-tree fallback still runs for correctness.
+
 To build the in-tree nanobind extension locally:
 
 ```bash
@@ -191,7 +196,10 @@ Backward support across backends uses explicit backend backward entrypoints for 
 
 ## Runtime Notes
 
-- Nanobind tier delegates to fast-metal where available (same exact eligibility constraints), otherwise pure fallback.
+- Nanobind tier uses its own in-tree Metal-kernel implementation path with pure fallback safety; it does not delegate to `fast_metal`.
+- Compiled nanobind extension Stage B runs `na1d` / `na2d` / `na3d` forward as fused-first from C++ entrypoints, with fallback chain `fused -> split -> pure`.
+- Compiled nanobind extension Stage B runs `na1d` / `na2d` / `na3d` backward as fused-first staged pipeline (`qk -> softmax grad -> qk/av backward`) in C++ entrypoints, with fallback chain `fused -> split -> pure`.
+- `NATTEN_NANOBIND_NATIVE_RUNTIME` controls compiled nanobind runtime routing: default native C++/Metal path is on; set `NATTEN_NANOBIND_NATIVE_RUNTIME=0` to force Python bridge mode for debugging/regression bisects.
 - Fast Metal forward no longer forces `float32` materialization for `float16`/`bfloat16` inputs; kernels accumulate in `float32` and outputs are cast back to input dtype.
 - Fast Metal low-precision dtype routing stays native by default; optional shape-aware fp32 fallback can be enabled with `NATTEN_MLX_FORWARD_LOWP_FP32_ROUTE=1` (currently a narrow `bfloat16` 2D fused causal/K9 small-shape rule).
 - Fast Metal vec4 forward kernels now cover split `na1d_qk`/`na1d_av`, split `na2d_qk`, split `na3d_qk`, and fused `na1d`/`na2d`/`na3d` when `head_dim % 4 == 0` (including causal paths).
