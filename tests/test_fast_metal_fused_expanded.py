@@ -301,3 +301,169 @@ def test_fast_metal_na3d_fused_vec4_uses_vec4_kernel_without_fallback(monkeypatc
     out_fast = fast_metal.na3d_forward(q, k, v, ks, st, dil, caus, scale)
     mx.eval(out_fast)
     np.testing.assert_allclose(np.array(out_fast), np.array(out_pure), rtol=1e-5, atol=1e-5)
+
+
+def test_fast_metal_na2d_fused_vec4_causal_uses_causal_vec4_kernel_without_fallback(monkeypatch):
+    if not fast_metal.is_available():
+        pytest.skip("fast_metal unavailable")
+
+    q = mx.random.normal((1, 24, 24, 4, 16))
+    k = mx.random.normal((1, 24, 24, 4, 16))
+    v = mx.random.normal((1, 24, 24, 4, 16))
+    ks = (7, 7)
+    st = (1, 1)
+    dil = (1, 1)
+    caus = (True, False)
+    scale = 0.5
+
+    out_pure = pure.na2d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_pure)
+
+    def _no_fallback(*_args, **_kwargs):
+        raise AssertionError("unexpected fallback to pure.na2d_forward")
+
+    def _unexpected_generic_vec4(*_args, **_kwargs):
+        raise AssertionError("unexpected generic 2d vec4 fused kernel path")
+
+    def _unexpected_scalar_causal(*_args, **_kwargs):
+        raise AssertionError("unexpected scalar causal 2d fused kernel path")
+
+    monkeypatch.setattr(pure, "na2d_forward", _no_fallback)
+    monkeypatch.setattr(fast_metal, "_get_2d_fused_vec4_kernel", _unexpected_generic_vec4)
+    monkeypatch.setattr(fast_metal, "_get_2d_fused_causal_kernel", _unexpected_scalar_causal)
+    out_fast = fast_metal.na2d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_fast)
+    np.testing.assert_allclose(np.array(out_fast), np.array(out_pure), rtol=1e-5, atol=1e-5)
+
+
+def test_fast_metal_na3d_fused_vec4_causal_uses_causal_vec4_kernel_without_fallback(monkeypatch):
+    if not fast_metal.is_available():
+        pytest.skip("fast_metal unavailable")
+
+    q = mx.random.normal((1, 10, 12, 14, 4, 16))
+    k = mx.random.normal((1, 10, 12, 14, 4, 16))
+    v = mx.random.normal((1, 10, 12, 14, 4, 16))
+    ks = (3, 3, 3)
+    st = (1, 1, 1)
+    dil = (1, 1, 1)
+    caus = (True, False, True)
+    scale = 0.5
+
+    out_pure = pure.na3d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_pure)
+
+    def _no_fallback(*_args, **_kwargs):
+        raise AssertionError("unexpected fallback to pure.na3d_forward")
+
+    def _unexpected_generic_vec4(*_args, **_kwargs):
+        raise AssertionError("unexpected generic 3d vec4 fused kernel path")
+
+    def _unexpected_scalar_causal(*_args, **_kwargs):
+        raise AssertionError("unexpected scalar causal 3d fused kernel path")
+
+    monkeypatch.setattr(pure, "na3d_forward", _no_fallback)
+    monkeypatch.setattr(fast_metal, "_get_3d_fused_vec4_kernel", _unexpected_generic_vec4)
+    monkeypatch.setattr(fast_metal, "_get_3d_fused_causal_kernel", _unexpected_scalar_causal)
+    out_fast = fast_metal.na3d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_fast)
+    np.testing.assert_allclose(np.array(out_fast), np.array(out_pure), rtol=1e-5, atol=1e-5)
+
+
+def test_fast_metal_na2d_split_av_vec4_uses_vec4_kernel_without_fallback(monkeypatch):
+    if not fast_metal.is_available():
+        pytest.skip("fast_metal unavailable")
+
+    attn = mx.softmax(mx.random.normal((1, 24, 24, 4, 49)), axis=-1)
+    v = mx.random.normal((1, 24, 24, 4, 16))
+    ks = (7, 7)
+    st = (1, 1)
+    dil = (1, 1)
+    caus = (True, False)
+
+    out_pure = pure.na2d_av_forward(attn, v, ks, st, dil, caus)
+    mx.eval(out_pure)
+
+    def _no_fallback(*_args, **_kwargs):
+        raise AssertionError("unexpected fallback to pure.na2d_av_forward")
+
+    def _unexpected_scalar_kernel(*_args, **_kwargs):
+        raise AssertionError("unexpected scalar 2d split av kernel path")
+
+    monkeypatch.setattr(pure, "na2d_av_forward", _no_fallback)
+    monkeypatch.setattr(fast_metal, "_get_2d_av_kernel", _unexpected_scalar_kernel)
+    out_fast = fast_metal.na2d_av_forward(attn, v, ks, st, dil, caus)
+    mx.eval(out_fast)
+    np.testing.assert_allclose(np.array(out_fast), np.array(out_pure), rtol=1e-5, atol=1e-5)
+
+
+def test_fast_metal_na3d_split_av_vec4_uses_vec4_kernel_without_fallback(monkeypatch):
+    if not fast_metal.is_available():
+        pytest.skip("fast_metal unavailable")
+
+    attn = mx.softmax(mx.random.normal((1, 10, 12, 14, 4, 27)), axis=-1)
+    v = mx.random.normal((1, 10, 12, 14, 4, 16))
+    ks = (3, 3, 3)
+    st = (1, 1, 1)
+    dil = (1, 1, 1)
+    caus = (True, False, False)
+
+    out_pure = pure.na3d_av_forward(attn, v, ks, st, dil, caus)
+    mx.eval(out_pure)
+
+    def _no_fallback(*_args, **_kwargs):
+        raise AssertionError("unexpected fallback to pure.na3d_av_forward")
+
+    def _unexpected_scalar_kernel(*_args, **_kwargs):
+        raise AssertionError("unexpected scalar 3d split av kernel path")
+
+    monkeypatch.setattr(pure, "na3d_av_forward", _no_fallback)
+    monkeypatch.setattr(fast_metal, "_get_3d_av_kernel", _unexpected_scalar_kernel)
+    out_fast = fast_metal.na3d_av_forward(attn, v, ks, st, dil, caus)
+    mx.eval(out_fast)
+    np.testing.assert_allclose(np.array(out_fast), np.array(out_pure), rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("strategy", ["stored", "recompute"])
+def test_fast_metal_na2d_fused_softmax_strategy_variants_match_pure(monkeypatch, strategy: str):
+    if not fast_metal.is_available():
+        pytest.skip("fast_metal unavailable")
+
+    q = mx.random.normal((1, 24, 24, 4, 16))
+    k = mx.random.normal((1, 24, 24, 4, 16))
+    v = mx.random.normal((1, 24, 24, 4, 16))
+    ks = (7, 7)
+    st = (1, 1)
+    dil = (1, 1)
+    caus = (True, False)
+    scale = 0.5
+
+    out_pure = pure.na2d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_pure)
+
+    monkeypatch.setattr(fast_metal, "_FORWARD_SOFTMAX_STRATEGY_OVERRIDE", strategy)
+    out_fast = fast_metal.na2d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_fast)
+    np.testing.assert_allclose(np.array(out_fast), np.array(out_pure), rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("strategy", ["stored", "recompute"])
+def test_fast_metal_na3d_fused_softmax_strategy_variants_match_pure(monkeypatch, strategy: str):
+    if not fast_metal.is_available():
+        pytest.skip("fast_metal unavailable")
+
+    q = mx.random.normal((1, 10, 12, 14, 4, 16))
+    k = mx.random.normal((1, 10, 12, 14, 4, 16))
+    v = mx.random.normal((1, 10, 12, 14, 4, 16))
+    ks = (3, 3, 3)
+    st = (1, 1, 1)
+    dil = (1, 1, 1)
+    caus = (True, False, True)
+    scale = 0.5
+
+    out_pure = pure.na3d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_pure)
+
+    monkeypatch.setattr(fast_metal, "_FORWARD_SOFTMAX_STRATEGY_OVERRIDE", strategy)
+    out_fast = fast_metal.na3d_forward(q, k, v, ks, st, dil, caus, scale)
+    mx.eval(out_fast)
+    np.testing.assert_allclose(np.array(out_fast), np.array(out_pure), rtol=1e-5, atol=1e-5)

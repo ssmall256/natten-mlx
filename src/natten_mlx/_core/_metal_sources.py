@@ -74,6 +74,13 @@ def _bool_literal(value: bool) -> str:
     return "true" if value else "false"
 
 
+def _normalize_softmax_strategy(softmax_strategy: str) -> str:
+    strategy = str(softmax_strategy).strip().lower()
+    if strategy not in {"stored", "recompute"}:
+        raise ValueError("softmax_strategy must be 'stored' or 'recompute'")
+    return strategy
+
+
 def source_1d_qk(kernel_size: int) -> str:
     nh = _nh(kernel_size)
     return _HELPERS + f"""
@@ -498,6 +505,82 @@ for (int d = 0; d < dim; d++) {{
 """
 
 
+def source_2d_av_vec4(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    area = _area(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = attention_probs_shape[0];
+const int heads = attention_probs_shape[1];
+const int height = attention_probs_shape[2];
+const int width = attention_probs_shape[3];
+const int dim = value_shape[4];
+const int dim4 = dim / 4;
+const int dilation_h = (int)dilation_param[0];
+const int dilation_w = (int)dilation_param[1];
+const bool causal_h = ((int)causal_param[0]) != 0;
+const bool causal_w = ((int)causal_param[1]) != 0;
+const int K = {kernel_size};
+const int NH = {nh};
+const int L = {area};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int i = gid.y;
+int j = gid.x;
+if (b >= batch_size || h >= heads || i >= height || j >= width) return;
+
+int ni = 0;
+int nj = 0;
+int ei = height;
+int ej = width;
+if (!causal_h) {{
+    NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation_h);
+    NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation_h);
+}}
+if (!causal_w) {{
+    NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation_w);
+    NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
+}}
+
+for (int d4 = 0; d4 < dim4; d4++) {{
+    int d0 = d4 * 4;
+    float acc0 = 0.0f;
+    float acc1 = 0.0f;
+    float acc2 = 0.0f;
+    float acc3 = 0.0f;
+    int neighbor_idx = 0;
+    for (int ki = 0; ki < K; ki++) {{
+        for (int kj = 0; kj < K; kj++) {{
+            int val_i = (causal_h ? (i - (K - 1) * dilation_h) : ni) + ki * dilation_h;
+            int val_j = (causal_w ? (j - (K - 1) * dilation_w) : nj) + kj * dilation_w;
+            bool valid_i = causal_h
+                ? (val_i >= 0 && val_i <= i && val_i < height)
+                : (val_i >= 0 && val_i < ei);
+            bool valid_j = causal_w
+                ? (val_j >= 0 && val_j <= j && val_j < width)
+                : (val_j >= 0 && val_j < ej);
+            if (valid_i && valid_j) {{
+                int attn_idx = (((b * heads + h) * height + i) * width + j) * L + neighbor_idx;
+                int val_base = (((b * heads + h) * height + val_i) * width + val_j) * dim + d0;
+                float w = attention_probs[attn_idx];
+                acc0 += w * value[val_base];
+                acc1 += w * value[val_base + 1];
+                acc2 += w * value[val_base + 2];
+                acc3 += w * value[val_base + 3];
+            }}
+            neighbor_idx++;
+        }}
+    }}
+    int out_base = (((b * heads + h) * height + i) * width + j) * dim + d0;
+    out[out_base] = acc0;
+    out[out_base + 1] = acc1;
+    out[out_base + 2] = acc2;
+    out[out_base + 3] = acc3;
+}}
+"""
+
+
 def source_3d_qk(kernel_size: int) -> str:
     nh = _nh(kernel_size)
     volume = _volume(kernel_size)
@@ -771,17 +854,112 @@ for (int d = 0; d < dim; d++) {{
 """
 
 
+def source_3d_av_vec4(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    volume = _volume(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = attention_probs_shape[0];
+const int heads = attention_probs_shape[1];
+const int depth = attention_probs_shape[2];
+const int height = attention_probs_shape[3];
+const int width = attention_probs_shape[4];
+const int dim = value_shape[5];
+const int dim4 = dim / 4;
+const int dilation_d = (int)dilation_param[0];
+const int dilation_h = (int)dilation_param[1];
+const int dilation_w = (int)dilation_param[2];
+const bool causal_d = ((int)causal_param[0]) != 0;
+const bool causal_h = ((int)causal_param[1]) != 0;
+const bool causal_w = ((int)causal_param[2]) != 0;
+const int K = {kernel_size};
+const int NH = {nh};
+const int L = {volume};
+
+int z = gid.z % depth;
+int bh = gid.z / depth;
+int b = bh / heads;
+int h = bh % heads;
+int i = gid.y;
+int j = gid.x;
+if (b >= batch_size || h >= heads || z >= depth || i >= height || j >= width) return;
+
+int nz = 0;
+int ni = 0;
+int nj = 0;
+int ez = depth;
+int ei = height;
+int ej = width;
+if (!causal_d) {{
+    NATTEN_GET_WINDOW_START(nz, z, depth, K, NH, dilation_d);
+    NATTEN_GET_WINDOW_END(ez, nz, depth, K, dilation_d);
+}}
+if (!causal_h) {{
+    NATTEN_GET_WINDOW_START(ni, i, height, K, NH, dilation_h);
+    NATTEN_GET_WINDOW_END(ei, ni, height, K, dilation_h);
+}}
+if (!causal_w) {{
+    NATTEN_GET_WINDOW_START(nj, j, width, K, NH, dilation_w);
+    NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
+}}
+
+for (int d4 = 0; d4 < dim4; d4++) {{
+    int d0 = d4 * 4;
+    float acc0 = 0.0f;
+    float acc1 = 0.0f;
+    float acc2 = 0.0f;
+    float acc3 = 0.0f;
+    int neighbor_idx = 0;
+    for (int kz = 0; kz < K; kz++) {{
+        for (int ki = 0; ki < K; ki++) {{
+            for (int kj = 0; kj < K; kj++) {{
+                int val_z = (causal_d ? (z - (K - 1) * dilation_d) : nz) + kz * dilation_d;
+                int val_i = (causal_h ? (i - (K - 1) * dilation_h) : ni) + ki * dilation_h;
+                int val_j = (causal_w ? (j - (K - 1) * dilation_w) : nj) + kj * dilation_w;
+                bool valid_z = causal_d
+                    ? (val_z >= 0 && val_z <= z && val_z < depth)
+                    : (val_z >= 0 && val_z < ez);
+                bool valid_i = causal_h
+                    ? (val_i >= 0 && val_i <= i && val_i < height)
+                    : (val_i >= 0 && val_i < ei);
+                bool valid_j = causal_w
+                    ? (val_j >= 0 && val_j <= j && val_j < width)
+                    : (val_j >= 0 && val_j < ej);
+                if (valid_z && valid_i && valid_j) {{
+                    int attn_idx = ((((b * heads + h) * depth + z) * height + i) * width + j) * L + neighbor_idx;
+                    int val_base = ((((b * heads + h) * depth + val_z) * height + val_i) * width + val_j) * dim + d0;
+                    float w = attention_probs[attn_idx];
+                    acc0 += w * value[val_base];
+                    acc1 += w * value[val_base + 1];
+                    acc2 += w * value[val_base + 2];
+                    acc3 += w * value[val_base + 3];
+                }}
+                neighbor_idx++;
+            }}
+        }}
+    }}
+    int out_base = ((((b * heads + h) * depth + z) * height + i) * width + j) * dim + d0;
+    out[out_base] = acc0;
+    out[out_base + 1] = acc1;
+    out[out_base + 2] = acc2;
+    out[out_base + 3] = acc3;
+}}
+"""
+
+
 def source_3d_fused(
     kernel_size: int,
     *,
     causal_d: bool | None = None,
     causal_h: bool | None = None,
     causal_w: bool | None = None,
+    softmax_strategy: str = "stored",
 ) -> str:
     nh = _nh(kernel_size)
     volume = _volume(kernel_size)
     if (causal_d is None) != (causal_h is None) or (causal_d is None) != (causal_w is None):
         raise ValueError("causal_d/causal_h/causal_w must be all None or all booleans")
+    strategy = _normalize_softmax_strategy(softmax_strategy)
     causal_d_decl = (
         "const bool causal_d = ((int)causal_param[0]) != 0;"
         if causal_d is None
@@ -797,6 +975,63 @@ def source_3d_fused(
         if causal_w is None
         else f"const bool causal_w = {_bool_literal(causal_w)};"
     )
+    use_stored = strategy == "stored"
+    logits_decl = "float logits[L];" if use_stored else ""
+    score_store = "logits[neighbor_idx] = score;" if use_stored else ""
+    if use_stored:
+        denom_code = """
+float denom = 0.0f;
+for (int n = 0; n < L; n++) {
+    logits[n] = exp(logits[n] - max_logit);
+    denom += logits[n];
+}
+"""
+        weight_code_scalar = """
+            float w = logits[n] * inv_denom;
+"""
+    else:
+        denom_code = """
+float denom = 0.0f;
+const int key_plane = height * width;
+for (int n = 0; n < L; n++) {
+    int key_lin = key_lin_arr[n];
+    float score = -INFINITY;
+    if (key_lin >= 0) {
+        int key_z = key_lin / key_plane;
+        int rem = key_lin - key_z * key_plane;
+        int key_i = rem / width;
+        int key_j = rem - key_i * width;
+        float sum = 0.0f;
+        for (int d = 0; d < dim; d++) {
+            int q_idx = ((((b * heads + h) * depth + z) * height + i) * width + j) * dim + d;
+            int k_idx = ((((b * heads + h) * depth + key_z) * height + key_i) * width + key_j) * dim + d;
+            sum += query[q_idx] * key[k_idx];
+        }
+        score = sum * scale;
+    }
+    denom += exp(score - max_logit);
+}
+"""
+        weight_code_scalar = """
+            float score = -INFINITY;
+            if (key_lin >= 0) {
+                const int key_plane = height * width;
+                int key_z = key_lin / key_plane;
+                int rem = key_lin - key_z * key_plane;
+                int key_i = rem / width;
+                int key_j = rem - key_i * width;
+                float sum = 0.0f;
+                for (int dd = 0; dd < dim; dd++) {
+                    int q_idx = ((((b * heads + h) * depth + z) * height + i) * width + j) * dim + dd;
+                    int k_idx = ((((b * heads + h) * depth + key_z) * height + key_i) * width + key_j) * dim + dd;
+                    sum += query[q_idx] * key[k_idx];
+                }
+                score = sum * scale;
+            }
+            float w = exp(score - max_logit) * inv_denom;
+"""
+    denom_code = denom_code.strip("\n")
+    weight_code_scalar = weight_code_scalar.strip("\n")
     return _HELPERS + f"""
 uint3 gid = thread_position_in_grid;
 const int batch_size = query_shape[0];
@@ -854,7 +1089,7 @@ if (!causal_w) {{
     NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
 }}
 
-float logits[L];
+{logits_decl}
 int key_lin_arr[L];
 
 float max_logit = -INFINITY;
@@ -886,18 +1121,14 @@ for (int kz = 0; kz < K; kz++) {{
                 }}
                 score = sum * scale;
             }}
-            logits[neighbor_idx] = score;
+            {score_store}
             max_logit = fmax(max_logit, score);
             neighbor_idx++;
         }}
     }}
 }}
 
-float denom = 0.0f;
-for (int n = 0; n < L; n++) {{
-    logits[n] = exp(logits[n] - max_logit);
-    denom += logits[n];
-}}
+{denom_code}
 float inv_denom = denom > 0.0f ? 1.0f / denom : 0.0f;
 
 for (int d = 0; d < dim; d++) {{
@@ -905,7 +1136,7 @@ for (int d = 0; d < dim; d++) {{
     for (int n = 0; n < L; n++) {{
         int key_lin = key_lin_arr[n];
         if (key_lin >= 0) {{
-            float w = logits[n] * inv_denom;
+            {weight_code_scalar}
             int v_idx = (((b * heads + h) * (depth * height * width) + key_lin) * dim + d);
             out_sum += w * value[v_idx];
         }}
@@ -916,9 +1147,101 @@ for (int d = 0; d < dim; d++) {{
 """
 
 
-def source_3d_fused_vec4(kernel_size: int) -> str:
+def source_3d_fused_vec4(
+    kernel_size: int,
+    *,
+    causal_d: bool | None = None,
+    causal_h: bool | None = None,
+    causal_w: bool | None = None,
+    softmax_strategy: str = "stored",
+) -> str:
     nh = _nh(kernel_size)
     volume = _volume(kernel_size)
+    if (causal_d is None) != (causal_h is None) or (causal_d is None) != (causal_w is None):
+        raise ValueError("causal_d/causal_h/causal_w must be all None or all booleans")
+    strategy = _normalize_softmax_strategy(softmax_strategy)
+    causal_d_decl = (
+        "const bool causal_d = ((int)causal_param[0]) != 0;"
+        if causal_d is None
+        else f"const bool causal_d = {_bool_literal(causal_d)};"
+    )
+    causal_h_decl = (
+        "const bool causal_h = ((int)causal_param[1]) != 0;"
+        if causal_h is None
+        else f"const bool causal_h = {_bool_literal(causal_h)};"
+    )
+    causal_w_decl = (
+        "const bool causal_w = ((int)causal_param[2]) != 0;"
+        if causal_w is None
+        else f"const bool causal_w = {_bool_literal(causal_w)};"
+    )
+    use_stored = strategy == "stored"
+    logits_decl = "float logits[L];" if use_stored else ""
+    score_store = "logits[neighbor_idx] = score;" if use_stored else ""
+    if use_stored:
+        denom_code = """
+float denom = 0.0f;
+for (int n = 0; n < L; n++) {
+    logits[n] = exp(logits[n] - max_logit);
+    denom += logits[n];
+}
+"""
+        weight_code_vec4 = """
+            float w = logits[n] * inv_denom;
+"""
+    else:
+        denom_code = """
+float denom = 0.0f;
+const int key_plane = height * width;
+for (int n = 0; n < L; n++) {
+    int key_lin = key_lin_arr[n];
+    float score = -INFINITY;
+    if (key_lin >= 0) {
+        int key_z = key_lin / key_plane;
+        int rem = key_lin - key_z * key_plane;
+        int key_i = rem / width;
+        int key_j = rem - key_i * width;
+        float sum = 0.0f;
+        for (int d4 = 0; d4 < dim4; d4++) {
+            int d0 = d4 * 4;
+            int q_base = (((((b * heads + h) * depth + z) * height + i) * width + j) * dim + d0);
+            int k_base =
+                (((((b * heads + h) * depth + key_z) * height + key_i) * width + key_j) * dim + d0);
+            sum += query[q_base] * key[k_base];
+            sum += query[q_base + 1] * key[k_base + 1];
+            sum += query[q_base + 2] * key[k_base + 2];
+            sum += query[q_base + 3] * key[k_base + 3];
+        }
+        score = sum * scale;
+    }
+    denom += exp(score - max_logit);
+}
+"""
+        weight_code_vec4 = """
+            float score = -INFINITY;
+            if (key_lin >= 0) {
+                const int key_plane = height * width;
+                int key_z = key_lin / key_plane;
+                int rem = key_lin - key_z * key_plane;
+                int key_i = rem / width;
+                int key_j = rem - key_i * width;
+                float sum = 0.0f;
+                for (int dd4 = 0; dd4 < dim4; dd4++) {
+                    int dd0 = dd4 * 4;
+                    int q_base = (((((b * heads + h) * depth + z) * height + i) * width + j) * dim + dd0);
+                    int k_base =
+                        (((((b * heads + h) * depth + key_z) * height + key_i) * width + key_j) * dim + dd0);
+                    sum += query[q_base] * key[k_base];
+                    sum += query[q_base + 1] * key[k_base + 1];
+                    sum += query[q_base + 2] * key[k_base + 2];
+                    sum += query[q_base + 3] * key[k_base + 3];
+                }
+                score = sum * scale;
+            }
+            float w = exp(score - max_logit) * inv_denom;
+"""
+    denom_code = denom_code.strip("\n")
+    weight_code_vec4 = weight_code_vec4.strip("\n")
     return _HELPERS + f"""
 uint3 gid = thread_position_in_grid;
 const int batch_size = query_shape[0];
@@ -937,9 +1260,9 @@ const int out_width = (width + stride_w - 1) / stride_w;
 const int dilation_d = (int)dilation_param[0];
 const int dilation_h = (int)dilation_param[1];
 const int dilation_w = (int)dilation_param[2];
-const bool causal_d = ((int)causal_param[0]) != 0;
-const bool causal_h = ((int)causal_param[1]) != 0;
-const bool causal_w = ((int)causal_param[2]) != 0;
+{causal_d_decl}
+{causal_h_decl}
+{causal_w_decl}
 const float scale = scale_param[0];
 const int K = {kernel_size};
 const int NH = {nh};
@@ -977,7 +1300,7 @@ if (!causal_w) {{
     NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
 }}
 
-float logits[L];
+{logits_decl}
 int key_lin_arr[L];
 
 float max_logit = -INFINITY;
@@ -1014,18 +1337,14 @@ for (int kz = 0; kz < K; kz++) {{
                 }}
                 score = sum * scale;
             }}
-            logits[neighbor_idx] = score;
+            {score_store}
             max_logit = fmax(max_logit, score);
             neighbor_idx++;
         }}
     }}
 }}
 
-float denom = 0.0f;
-for (int n = 0; n < L; n++) {{
-    logits[n] = exp(logits[n] - max_logit);
-    denom += logits[n];
-}}
+{denom_code}
 float inv_denom = denom > 0.0f ? 1.0f / denom : 0.0f;
 
 for (int d4 = 0; d4 < dim4; d4++) {{
@@ -1037,7 +1356,7 @@ for (int d4 = 0; d4 < dim4; d4++) {{
     for (int n = 0; n < L; n++) {{
         int key_lin = key_lin_arr[n];
         if (key_lin >= 0) {{
-            float w = logits[n] * inv_denom;
+            {weight_code_vec4}
             int v_base = (((b * heads + h) * (depth * height * width) + key_lin) * dim + d0);
             acc0 += w * value[v_base];
             acc1 += w * value[v_base + 1];
@@ -1055,12 +1374,37 @@ for (int d4 = 0; d4 < dim4; d4++) {{
 """
 
 
-def source_3d_fused_causal(kernel_size: int, causal_d: bool, causal_h: bool, causal_w: bool) -> str:
+def source_3d_fused_causal(
+    kernel_size: int,
+    causal_d: bool,
+    causal_h: bool,
+    causal_w: bool,
+    *,
+    softmax_strategy: str = "stored",
+) -> str:
     return source_3d_fused(
         kernel_size,
         causal_d=causal_d,
         causal_h=causal_h,
         causal_w=causal_w,
+        softmax_strategy=softmax_strategy,
+    )
+
+
+def source_3d_fused_causal_vec4(
+    kernel_size: int,
+    causal_d: bool,
+    causal_h: bool,
+    causal_w: bool,
+    *,
+    softmax_strategy: str = "stored",
+) -> str:
+    return source_3d_fused_vec4(
+        kernel_size,
+        causal_d=causal_d,
+        causal_h=causal_h,
+        causal_w=causal_w,
+        softmax_strategy=softmax_strategy,
     )
 
 
@@ -1391,11 +1735,13 @@ def source_2d_fused(
     *,
     causal_h: bool | None = None,
     causal_w: bool | None = None,
+    softmax_strategy: str = "stored",
 ) -> str:
     nh = _nh(kernel_size)
     area = _area(kernel_size)
     if (causal_h is None) != (causal_w is None):
         raise ValueError("causal_h/causal_w must both be None or both booleans")
+    strategy = _normalize_softmax_strategy(softmax_strategy)
     causal_h_decl = (
         "const bool causal_h = ((int)causal_param[0]) != 0;"
         if causal_h is None
@@ -1406,6 +1752,57 @@ def source_2d_fused(
         if causal_w is None
         else f"const bool causal_w = {_bool_literal(causal_w)};"
     )
+    use_stored = strategy == "stored"
+    logits_decl = "float logits[L];" if use_stored else ""
+    score_store = "logits[neighbor_idx] = score;" if use_stored else ""
+    if use_stored:
+        denom_code = """
+float denom = 0.0f;
+for (int n = 0; n < L; n++) {
+    logits[n] = exp(logits[n] - max_logit);
+    denom += logits[n];
+}
+"""
+        weight_code_scalar = """
+            float w = logits[n] * inv_denom;
+"""
+    else:
+        denom_code = """
+float denom = 0.0f;
+for (int n = 0; n < L; n++) {
+    int key_lin = key_lin_arr[n];
+    float score = -INFINITY;
+    if (key_lin >= 0) {
+        int key_i = key_lin / width;
+        int key_j = key_lin - key_i * width;
+        float sum = 0.0f;
+        for (int d = 0; d < dim; d++) {
+            int q_idx = (((b * heads + h) * height + i) * width + j) * dim + d;
+            int k_idx = (((b * heads + h) * height + key_i) * width + key_j) * dim + d;
+            sum += query[q_idx] * key[k_idx];
+        }
+        score = sum * scale;
+    }
+    denom += exp(score - max_logit);
+}
+"""
+        weight_code_scalar = """
+            float score = -INFINITY;
+            if (key_lin >= 0) {
+                int key_i = key_lin / width;
+                int key_j = key_lin - key_i * width;
+                float sum = 0.0f;
+                for (int dd = 0; dd < dim; dd++) {
+                    int q_idx = (((b * heads + h) * height + i) * width + j) * dim + dd;
+                    int k_idx = (((b * heads + h) * height + key_i) * width + key_j) * dim + dd;
+                    sum += query[q_idx] * key[k_idx];
+                }
+                score = sum * scale;
+            }
+            float w = exp(score - max_logit) * inv_denom;
+"""
+    denom_code = denom_code.strip("\n")
+    weight_code_scalar = weight_code_scalar.strip("\n")
     return _HELPERS + f"""
 uint3 gid = thread_position_in_grid;
 const int batch_size = query_shape[0];
@@ -1448,7 +1845,7 @@ if (!causal_w) {{
     NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
 }}
 
-float logits[L];
+{logits_decl}
 int key_lin_arr[L];
 
 float max_logit = -INFINITY;
@@ -1475,17 +1872,13 @@ for (int ki = 0; ki < K; ki++) {{
             }}
             score = sum * scale;
         }}
-        logits[neighbor_idx] = score;
+        {score_store}
         max_logit = fmax(max_logit, score);
         neighbor_idx++;
     }}
 }}
 
-float denom = 0.0f;
-for (int n = 0; n < L; n++) {{
-    logits[n] = exp(logits[n] - max_logit);
-    denom += logits[n];
-}}
+{denom_code}
 float inv_denom = denom > 0.0f ? 1.0f / denom : 0.0f;
 
 for (int d = 0; d < dim; d++) {{
@@ -1493,7 +1886,7 @@ for (int d = 0; d < dim; d++) {{
     for (int n = 0; n < L; n++) {{
         int key_lin = key_lin_arr[n];
         if (key_lin >= 0) {{
-            float w = logits[n] * inv_denom;
+            {weight_code_scalar}
             int v_idx = (((b * heads + h) * (height * width) + key_lin) * dim + d);
             out_sum += w * value[v_idx];
         }}
@@ -1504,9 +1897,87 @@ for (int d = 0; d < dim; d++) {{
 """
 
 
-def source_2d_fused_vec4(kernel_size: int) -> str:
+def source_2d_fused_vec4(
+    kernel_size: int,
+    *,
+    causal_h: bool | None = None,
+    causal_w: bool | None = None,
+    softmax_strategy: str = "stored",
+) -> str:
     nh = _nh(kernel_size)
     area = _area(kernel_size)
+    if (causal_h is None) != (causal_w is None):
+        raise ValueError("causal_h/causal_w must both be None or both booleans")
+    strategy = _normalize_softmax_strategy(softmax_strategy)
+    causal_h_decl = (
+        "const bool causal_h = ((int)causal_param[0]) != 0;"
+        if causal_h is None
+        else f"const bool causal_h = {_bool_literal(causal_h)};"
+    )
+    causal_w_decl = (
+        "const bool causal_w = ((int)causal_param[1]) != 0;"
+        if causal_w is None
+        else f"const bool causal_w = {_bool_literal(causal_w)};"
+    )
+    use_stored = strategy == "stored"
+    logits_decl = "float logits[L];" if use_stored else ""
+    score_store = "logits[neighbor_idx] = score;" if use_stored else ""
+    if use_stored:
+        denom_code = """
+float denom = 0.0f;
+for (int n = 0; n < L; n++) {
+    logits[n] = exp(logits[n] - max_logit);
+    denom += logits[n];
+}
+"""
+        weight_code_vec4 = """
+            float w = logits[n] * inv_denom;
+"""
+    else:
+        denom_code = """
+float denom = 0.0f;
+for (int n = 0; n < L; n++) {
+    int key_lin = key_lin_arr[n];
+    float score = -INFINITY;
+    if (key_lin >= 0) {
+        int key_i = key_lin / width;
+        int key_j = key_lin - key_i * width;
+        float sum = 0.0f;
+        for (int d4 = 0; d4 < dim4; d4++) {
+            int d0 = d4 * 4;
+            int q_base = ((((b * heads + h) * height + i) * width + j) * dim + d0);
+            int k_base = ((((b * heads + h) * height + key_i) * width + key_j) * dim + d0);
+            sum += query[q_base] * key[k_base];
+            sum += query[q_base + 1] * key[k_base + 1];
+            sum += query[q_base + 2] * key[k_base + 2];
+            sum += query[q_base + 3] * key[k_base + 3];
+        }
+        score = sum * scale;
+    }
+    denom += exp(score - max_logit);
+}
+"""
+        weight_code_vec4 = """
+            float score = -INFINITY;
+            if (key_lin >= 0) {
+                int key_i = key_lin / width;
+                int key_j = key_lin - key_i * width;
+                float sum = 0.0f;
+                for (int dd4 = 0; dd4 < dim4; dd4++) {
+                    int dd0 = dd4 * 4;
+                    int q_base = ((((b * heads + h) * height + i) * width + j) * dim + dd0);
+                    int k_base = ((((b * heads + h) * height + key_i) * width + key_j) * dim + dd0);
+                    sum += query[q_base] * key[k_base];
+                    sum += query[q_base + 1] * key[k_base + 1];
+                    sum += query[q_base + 2] * key[k_base + 2];
+                    sum += query[q_base + 3] * key[k_base + 3];
+                }
+                score = sum * scale;
+            }
+            float w = exp(score - max_logit) * inv_denom;
+"""
+    denom_code = denom_code.strip("\n")
+    weight_code_vec4 = weight_code_vec4.strip("\n")
     return _HELPERS + f"""
 uint3 gid = thread_position_in_grid;
 const int batch_size = query_shape[0];
@@ -1521,8 +1992,8 @@ const int out_height = (height + stride_h - 1) / stride_h;
 const int out_width = (width + stride_w - 1) / stride_w;
 const int dilation_h = (int)dilation_param[0];
 const int dilation_w = (int)dilation_param[1];
-const bool causal_h = ((int)causal_param[0]) != 0;
-const bool causal_w = ((int)causal_param[1]) != 0;
+{causal_h_decl}
+{causal_w_decl}
 const float scale = scale_param[0];
 const int K = {kernel_size};
 const int NH = {nh};
@@ -1550,7 +2021,7 @@ if (!causal_w) {{
     NATTEN_GET_WINDOW_END(ej, nj, width, K, dilation_w);
 }}
 
-float logits[L];
+{logits_decl}
 int key_lin_arr[L];
 
 float max_logit = -INFINITY;
@@ -1581,17 +2052,13 @@ for (int ki = 0; ki < K; ki++) {{
             }}
             score = sum * scale;
         }}
-        logits[neighbor_idx] = score;
+        {score_store}
         max_logit = fmax(max_logit, score);
         neighbor_idx++;
     }}
 }}
 
-float denom = 0.0f;
-for (int n = 0; n < L; n++) {{
-    logits[n] = exp(logits[n] - max_logit);
-    denom += logits[n];
-}}
+{denom_code}
 float inv_denom = denom > 0.0f ? 1.0f / denom : 0.0f;
 
 for (int d4 = 0; d4 < dim4; d4++) {{
@@ -1603,7 +2070,7 @@ for (int d4 = 0; d4 < dim4; d4++) {{
     for (int n = 0; n < L; n++) {{
         int key_lin = key_lin_arr[n];
         if (key_lin >= 0) {{
-            float w = logits[n] * inv_denom;
+            {weight_code_vec4}
             int v_base = (((b * heads + h) * (height * width) + key_lin) * dim + d0);
             acc0 += w * value[v_base];
             acc1 += w * value[v_base + 1];
@@ -1620,8 +2087,34 @@ for (int d4 = 0; d4 < dim4; d4++) {{
 """
 
 
-def source_2d_fused_causal(kernel_size: int, causal_h: bool, causal_w: bool) -> str:
-    return source_2d_fused(kernel_size, causal_h=causal_h, causal_w=causal_w)
+def source_2d_fused_causal(
+    kernel_size: int,
+    causal_h: bool,
+    causal_w: bool,
+    *,
+    softmax_strategy: str = "stored",
+) -> str:
+    return source_2d_fused(
+        kernel_size,
+        causal_h=causal_h,
+        causal_w=causal_w,
+        softmax_strategy=softmax_strategy,
+    )
+
+
+def source_2d_fused_causal_vec4(
+    kernel_size: int,
+    causal_h: bool,
+    causal_w: bool,
+    *,
+    softmax_strategy: str = "stored",
+) -> str:
+    return source_2d_fused_vec4(
+        kernel_size,
+        causal_h=causal_h,
+        causal_w=causal_w,
+        softmax_strategy=softmax_strategy,
+    )
 
 
 def source_1d_qk_backward_k(kernel_size: int) -> str:

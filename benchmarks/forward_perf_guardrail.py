@@ -13,7 +13,7 @@ from pathlib import Path
 
 import mlx.core as mx
 
-from natten_mlx import na1d, na2d, na3d, set_backend
+from natten_mlx import na1d, na2d, na2d_av, na2d_qk, na3d, na3d_av, na3d_qk, set_backend
 
 
 def _stats(times_ms: list[float]) -> dict[str, float]:
@@ -99,14 +99,23 @@ def _build_cases():
         q1 = mx.random.normal((1, 512, 8, 64)).astype(dtype)
         k1 = mx.random.normal((1, 512, 8, 64)).astype(dtype)
         v1 = mx.random.normal((1, 512, 8, 64)).astype(dtype)
+        q1_long = mx.random.normal((1, 2048, 8, 16)).astype(dtype)
+        k1_long = mx.random.normal((1, 2048, 8, 16)).astype(dtype)
+        v1_long = mx.random.normal((1, 2048, 8, 16)).astype(dtype)
 
         q2 = mx.random.normal((1, 24, 24, 8, 16)).astype(dtype)
         k2 = mx.random.normal((1, 24, 24, 8, 16)).astype(dtype)
         v2 = mx.random.normal((1, 24, 24, 8, 16)).astype(dtype)
+        q2_split = mx.random.normal((1, 20, 18, 8, 16)).astype(dtype)
+        k2_split = mx.random.normal((1, 20, 18, 8, 16)).astype(dtype)
+        v2_split = mx.random.normal((1, 20, 18, 8, 16)).astype(dtype)
 
         q3 = mx.random.normal((1, 10, 12, 14, 4, 16)).astype(dtype)
         k3 = mx.random.normal((1, 10, 12, 14, 4, 16)).astype(dtype)
         v3 = mx.random.normal((1, 10, 12, 14, 4, 16)).astype(dtype)
+        q3_split = mx.random.normal((1, 8, 10, 12, 4, 16)).astype(dtype)
+        k3_split = mx.random.normal((1, 8, 10, 12, 4, 16)).astype(dtype)
+        v3_split = mx.random.normal((1, 8, 10, 12, 4, 16)).astype(dtype)
 
         cases.extend(
             [
@@ -122,6 +131,21 @@ def _build_cases():
                         is_causal=True,
                         scale=0.5,
                     ),
+                    "min_speedup": 1.10,
+                },
+                {
+                    "name": f"na1d_k9_s1_d1_causal_decode_L2048_D16_{dtype_name}",
+                    "forward": lambda q=q1_long, k=k1_long, v=v1_long: na1d(
+                        q,
+                        k,
+                        v,
+                        kernel_size=9,
+                        stride=1,
+                        dilation=1,
+                        is_causal=True,
+                        scale=0.5,
+                    ),
+                    "min_speedup": 1.05,
                 },
                 {
                     "name": f"na2d_k9x9_s1_d1_causal_h_24x24_D16_{dtype_name}",
@@ -133,8 +157,46 @@ def _build_cases():
                         stride=(1, 1),
                         dilation=(1, 1),
                         is_causal=(True, False),
+                            scale=0.5,
+                        ),
+                    "min_speedup": 1.10,
+                },
+                {
+                    "name": f"na2d_k7x7_s2x1_d1x2_causal_h_strided_20x18_D16_{dtype_name}",
+                    "forward": lambda q=q2_split, k=k2_split, v=v2_split: na2d(
+                        q,
+                        k,
+                        v,
+                        kernel_size=(7, 7),
+                        stride=(2, 1),
+                        dilation=(1, 2),
+                        is_causal=(True, False),
                         scale=0.5,
                     ),
+                    "min_speedup": 1.05,
+                },
+                {
+                    "name": f"na2d_split_k7x7_s2x1_d1x2_causal_h_20x18_D16_{dtype_name}",
+                    "forward": lambda q=q2_split, k=k2_split, v=v2_split: na2d_av(
+                        mx.softmax(
+                            na2d_qk(
+                                q,
+                                k,
+                                kernel_size=(7, 7),
+                                stride=(2, 1),
+                                dilation=(1, 2),
+                                is_causal=(True, False),
+                                scale=0.5,
+                            ),
+                            axis=-1,
+                        ),
+                        v,
+                        kernel_size=(7, 7),
+                        stride=(2, 1),
+                        dilation=(1, 2),
+                        is_causal=(True, False),
+                    ),
+                    "min_speedup": 1.05,
                 },
                 {
                     "name": f"na3d_k3x3x3_s1_d1_causal_d_10x12x14_D16_{dtype_name}",
@@ -146,8 +208,32 @@ def _build_cases():
                         stride=(1, 1, 1),
                         dilation=(1, 1, 1),
                         is_causal=(True, False, False),
-                        scale=0.5,
+                            scale=0.5,
+                        ),
+                    "min_speedup": 1.10,
+                },
+                {
+                    "name": f"na3d_split_k3x3x3_s2x1x1_d1x1x2_causal_d_8x10x12_D16_{dtype_name}",
+                    "forward": lambda q=q3_split, k=k3_split, v=v3_split: na3d_av(
+                        mx.softmax(
+                            na3d_qk(
+                                q,
+                                k,
+                                kernel_size=(3, 3, 3),
+                                stride=(2, 1, 1),
+                                dilation=(1, 1, 2),
+                                is_causal=(True, False, False),
+                                scale=0.5,
+                            ),
+                            axis=-1,
+                        ),
+                        v,
+                        kernel_size=(3, 3, 3),
+                        stride=(2, 1, 1),
+                        dilation=(1, 1, 2),
+                        is_causal=(True, False, False),
                     ),
+                    "min_speedup": 1.05,
                 },
             ]
         )
@@ -216,6 +302,7 @@ def main() -> None:
         "trim_head": args.trim_head,
         "min_speedup": args.min_speedup,
         "cases": [c["name"] for c in cases],
+        "case_min_speedup": {c["name"]: float(c.get("min_speedup", args.min_speedup)) for c in cases},
         "results": {backend: {} for backend in backends},
     }
 
@@ -241,8 +328,10 @@ def main() -> None:
             backend_median = payload["results"][backend][name]["median_ms"]
             speedup = pure_median / backend_median if backend_median > 0.0 else 0.0
             payload["results"][backend][name]["speedup_vs_pure"] = speedup
-            if speedup < args.min_speedup:
-                violations.append((backend, name, backend_median, pure_median, speedup))
+            case_min_speedup = float(case.get("min_speedup", args.min_speedup))
+            payload["results"][backend][name]["required_min_speedup"] = case_min_speedup
+            if speedup < case_min_speedup:
+                violations.append((backend, name, backend_median, pure_median, speedup, case_min_speedup))
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -250,14 +339,14 @@ def main() -> None:
 
     print(json.dumps(payload, indent=2, sort_keys=True))
     if violations:
-        for backend, case, median_ms, pure_median_ms, speedup in violations:
+        for backend, case, median_ms, pure_median_ms, speedup, min_speedup in violations:
             _emit_violation(
                 backend=backend,
                 case=case,
                 median_ms=median_ms,
                 pure_median_ms=pure_median_ms,
                 speedup=speedup,
-                min_speedup=args.min_speedup,
+                min_speedup=min_speedup,
                 github_annotations=args.github_annotations,
             )
         raise SystemExit(1)

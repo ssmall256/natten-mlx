@@ -3,7 +3,7 @@ import pytest
 
 mx = pytest.importorskip("mlx.core")
 
-from natten_mlx import na1d, na1d_qk, na2d, na3d, set_backend
+from natten_mlx import na1d, na1d_qk, na2d, na2d_av, na2d_qk, na3d, na3d_av, na3d_qk, set_backend
 
 
 def _run_backend(backend: str, fn):
@@ -169,3 +169,57 @@ def test_low_precision_backend_parity_na1d_qk_inf_mask(backend: str, dtype, caus
     finite = np.isfinite(pure_np) & np.isfinite(back_np)
     atol, rtol = _tol(dtype)
     np.testing.assert_allclose(back_np[finite], pure_np[finite], atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("backend", ["fast_metal", "nanobind"])
+@pytest.mark.parametrize("dtype", _low_precision_dtypes(), ids=lambda d: str(d))
+def test_low_precision_backend_parity_na2d_split_causal_strided(backend: str, dtype):
+    rng = np.random.default_rng(105)
+    q = mx.array(rng.standard_normal((1, 20, 18, 4, 16), dtype=np.float32), dtype=dtype)
+    k = mx.array(rng.standard_normal((1, 20, 18, 4, 16), dtype=np.float32), dtype=dtype)
+    v = mx.array(rng.standard_normal((1, 20, 18, 4, 16), dtype=np.float32), dtype=dtype)
+    ks = (7, 7)
+    st = (2, 1)
+    dil = (1, 2)
+    caus = (True, False)
+    scale = 0.5
+
+    def _run():
+        logits = na2d_qk(q, k, kernel_size=ks, stride=st, dilation=dil, is_causal=caus, scale=scale)
+        attn = mx.softmax(logits, axis=-1)
+        return na2d_av(attn, v, kernel_size=ks, stride=st, dilation=dil, is_causal=caus)
+
+    out_pure = _run_backend("pure", _run)
+    out_backend = _run_backend(backend, _run)
+    mx.eval(out_pure, out_backend)
+    assert out_backend.dtype == dtype
+
+    atol, rtol = _tol(dtype)
+    np.testing.assert_allclose(_to_np32(out_backend), _to_np32(out_pure), atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("backend", ["fast_metal", "nanobind"])
+@pytest.mark.parametrize("dtype", _low_precision_dtypes(), ids=lambda d: str(d))
+def test_low_precision_backend_parity_na3d_split_causal_strided(backend: str, dtype):
+    rng = np.random.default_rng(106)
+    q = mx.array(rng.standard_normal((1, 8, 10, 12, 4, 16), dtype=np.float32), dtype=dtype)
+    k = mx.array(rng.standard_normal((1, 8, 10, 12, 4, 16), dtype=np.float32), dtype=dtype)
+    v = mx.array(rng.standard_normal((1, 8, 10, 12, 4, 16), dtype=np.float32), dtype=dtype)
+    ks = (3, 3, 3)
+    st = (2, 1, 1)
+    dil = (1, 1, 2)
+    caus = (True, False, False)
+    scale = 0.5
+
+    def _run():
+        logits = na3d_qk(q, k, kernel_size=ks, stride=st, dilation=dil, is_causal=caus, scale=scale)
+        attn = mx.softmax(logits, axis=-1)
+        return na3d_av(attn, v, kernel_size=ks, stride=st, dilation=dil, is_causal=caus)
+
+    out_pure = _run_backend("pure", _run)
+    out_backend = _run_backend(backend, _run)
+    mx.eval(out_pure, out_backend)
+    assert out_backend.dtype == dtype
+
+    atol, rtol = _tol(dtype)
+    np.testing.assert_allclose(_to_np32(out_backend), _to_np32(out_pure), atol=atol, rtol=rtol)

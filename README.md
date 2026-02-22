@@ -131,18 +131,18 @@ Median latency table (ms, lower is better; includes both noncausal and causal co
 
 | Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal speedup vs pure | nanobind speedup vs pure |
 |---|---:|---:|---:|---:|---:|---:|
-| `na1d_k7_s1_d1_noncausal` | `forward` | 0.427 | 0.213 | 0.182 | 2.00x | 2.34x |
-| `na1d_k7_s1_d1_noncausal` | `backward` | 0.496 | 0.291 | 0.307 | 1.71x | 1.62x |
-| `na1d_k7_s1_d1_causal` | `forward` | 0.371 | 0.196 | 0.195 | 1.89x | 1.90x |
-| `na1d_k7_s1_d1_causal` | `backward` | 0.434 | 0.296 | 0.285 | 1.47x | 1.52x |
-| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.673 | 0.679 | 0.676 | 2.46x | 2.47x |
-| `na2d_k7x7_s1_d1_noncausal` | `backward` | 1.993 | 0.570 | 0.557 | 3.49x | 3.58x |
-| `na2d_k7x7_s1_d1_causal_h` | `forward` | 1.502 | 0.698 | 0.691 | 2.15x | 2.17x |
-| `na2d_k7x7_s1_d1_causal_h` | `backward` | 1.963 | 0.574 | 0.581 | 3.42x | 3.38x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.870 | 0.308 | 0.309 | 2.82x | 2.82x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 1.073 | 0.352 | 0.366 | 3.05x | 2.93x |
-| `na3d_k3x3x3_s1_d1_causal_d` | `forward` | 0.857 | 0.296 | 0.287 | 2.89x | 2.98x |
-| `na3d_k3x3x3_s1_d1_causal_d` | `backward` | 0.993 | 0.368 | 0.357 | 2.70x | 2.78x |
+| `na1d_k7_s1_d1_noncausal` | `forward` | 0.423 | 0.181 | 0.172 | 2.34x | 2.46x |
+| `na1d_k7_s1_d1_noncausal` | `backward` | 0.513 | 0.298 | 0.295 | 1.72x | 1.74x |
+| `na1d_k7_s1_d1_causal` | `forward` | 0.373 | 0.165 | 0.164 | 2.26x | 2.27x |
+| `na1d_k7_s1_d1_causal` | `backward` | 0.441 | 0.290 | 0.298 | 1.52x | 1.48x |
+| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.759 | 0.261 | 0.269 | 6.73x | 6.53x |
+| `na2d_k7x7_s1_d1_noncausal` | `backward` | 2.118 | 0.473 | 0.493 | 4.48x | 4.29x |
+| `na2d_k7x7_s1_d1_causal_h` | `forward` | 1.538 | 0.262 | 0.268 | 5.88x | 5.73x |
+| `na2d_k7x7_s1_d1_causal_h` | `backward` | 1.934 | 0.491 | 0.497 | 3.94x | 3.89x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.853 | 0.194 | 0.206 | 4.40x | 4.15x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 1.010 | 0.344 | 0.343 | 2.94x | 2.94x |
+| `na3d_k3x3x3_s1_d1_causal_d` | `forward` | 0.851 | 0.179 | 0.193 | 4.76x | 4.41x |
+| `na3d_k3x3x3_s1_d1_causal_d` | `backward` | 0.975 | 0.342 | 0.358 | 2.85x | 2.72x |
 
 Raw artifacts are written to:
 - `benchmarks/final-perf.json`
