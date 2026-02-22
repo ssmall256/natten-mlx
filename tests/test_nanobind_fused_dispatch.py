@@ -39,9 +39,11 @@ def test_nanobind_fused_1d_dispatch(_backend_nanobind, is_causal: bool, stride: 
     out = na1d(q, k, v, kernel_size=3, stride=stride, dilation=1, is_causal=is_causal, scale=0.5)
     mx.eval(out)
     assert out.shape == (1, (19 + stride - 1) // stride, 2, dim)
-    assert _EXT._debug_get_last_route("na1d_forward") == "fused"
-    kernel = _EXT._debug_get_last_kernel("na1d_forward")
-    assert ("fp16" in kernel) or ("bf16" in kernel) or ("fp32" in kernel)
+    route = _EXT._debug_get_last_route("na1d_forward")
+    assert route in ("fused", "v2_primitive")
+    if route == "fused":
+        kernel = _EXT._debug_get_last_kernel("na1d_forward")
+        assert ("fp16" in kernel) or ("bf16" in kernel) or ("fp32" in kernel)
 
 
 @pytest.mark.parametrize(
@@ -55,7 +57,7 @@ def test_nanobind_fused_2d_dispatch(_backend_nanobind, is_causal, stride, dim: i
     out = na2d(q, k, v, kernel_size=(3, 3), stride=stride, dilation=(1, 1), is_causal=is_causal, scale=0.5)
     mx.eval(out)
     assert out.shape == (1, (11 + stride[0] - 1) // stride[0], (9 + stride[1] - 1) // stride[1], 2, dim)
-    assert _EXT._debug_get_last_route("na2d_forward") == "fused"
+    assert _EXT._debug_get_last_route("na2d_forward") in ("fused", "v2_primitive")
 
 
 def test_nanobind_auto_uses_bf16_strided_causal_h_fused_kernel(_backend_nanobind):
@@ -76,8 +78,10 @@ def test_nanobind_auto_uses_bf16_strided_causal_h_fused_kernel(_backend_nanobind
         scale=0.5,
     )
     mx.eval(out)
-    assert _EXT._debug_get_last_route("na2d_forward") == "fused"
-    assert _EXT._debug_get_last_kernel("na2d_forward") == "na2d_fused_strided_causal_h_k7d16_bf16"
+    route = _EXT._debug_get_last_route("na2d_forward")
+    assert route in ("fused", "v2_primitive")
+    if route == "fused":
+        assert _EXT._debug_get_last_kernel("na2d_forward") == "na2d_fused_strided_causal_h_k7d16_bf16"
 
 
 @pytest.mark.parametrize(
@@ -98,7 +102,7 @@ def test_nanobind_fused_3d_dispatch(_backend_nanobind, is_causal, stride, dim: i
         2,
         dim,
     )
-    assert _EXT._debug_get_last_route("na3d_forward") == "fused"
+    assert _EXT._debug_get_last_route("na3d_forward") in ("fused", "v2_primitive")
 
 
 def test_nanobind_fused_forward_fallback_chain(_backend_nanobind):
@@ -106,15 +110,24 @@ def test_nanobind_fused_forward_fallback_chain(_backend_nanobind):
     k = mx.random.normal((1, 17, 2, 12))
     v = mx.random.normal((1, 17, 2, 12))
 
-    _EXT._debug_force_fused_failure(True)
-    out = na1d(q, k, v, kernel_size=3, stride=1, dilation=1, is_causal=False, scale=0.5)
-    mx.eval(out)
-    assert _EXT._debug_get_last_route("na1d_forward") == "split"
+    # Disable v2 to test legacy fallback chain
+    prev_v2 = os.environ.get("NATTEN_NANOBIND_DISABLE_V2")
+    os.environ["NATTEN_NANOBIND_DISABLE_V2"] = "1"
+    try:
+        _EXT._debug_force_fused_failure(True)
+        out = na1d(q, k, v, kernel_size=3, stride=1, dilation=1, is_causal=False, scale=0.5)
+        mx.eval(out)
+        assert _EXT._debug_get_last_route("na1d_forward") == "split"
 
-    _EXT._debug_force_split_failure(True)
-    out = na1d(q, k, v, kernel_size=3, stride=1, dilation=1, is_causal=False, scale=0.5)
-    mx.eval(out)
-    assert _EXT._debug_get_last_route("na1d_forward") == "pure"
+        _EXT._debug_force_split_failure(True)
+        out = na1d(q, k, v, kernel_size=3, stride=1, dilation=1, is_causal=False, scale=0.5)
+        mx.eval(out)
+        assert _EXT._debug_get_last_route("na1d_forward") == "pure"
+    finally:
+        if prev_v2 is None:
+            os.environ.pop("NATTEN_NANOBIND_DISABLE_V2", None)
+        else:
+            os.environ["NATTEN_NANOBIND_DISABLE_V2"] = prev_v2
 
 
 def test_nanobind_forward_auto_prefers_split_for_large_noncausal_2d(_backend_nanobind):
@@ -132,7 +145,7 @@ def test_nanobind_forward_auto_prefers_split_for_large_noncausal_2d(_backend_nan
         scale=0.5,
     )
     mx.eval(out)
-    assert _EXT._debug_get_last_route("na2d_forward") == "split"
+    assert _EXT._debug_get_last_route("na2d_forward") in ("split", "v2_primitive")
 
 
 def test_nanobind_forward_auto_prefers_split_for_large_noncausal_3d(_backend_nanobind):
@@ -150,7 +163,7 @@ def test_nanobind_forward_auto_prefers_split_for_large_noncausal_3d(_backend_nan
         scale=0.5,
     )
     mx.eval(out)
-    assert _EXT._debug_get_last_route("na3d_forward") == "split"
+    assert _EXT._debug_get_last_route("na3d_forward") in ("split", "v2_primitive")
 
 
 def test_nanobind_forward_mode_override_forces_fused_3d(_backend_nanobind):
@@ -171,7 +184,7 @@ def test_nanobind_forward_mode_override_forces_fused_3d(_backend_nanobind):
             scale=0.5,
         )
         mx.eval(out)
-        assert _EXT._debug_get_last_route("na3d_forward") == "fused"
+        assert _EXT._debug_get_last_route("na3d_forward") in ("fused", "v2_primitive")
     finally:
         if prev is None:
             os.environ.pop("NATTEN_NANOBIND_FUSED_FWD_3D_MODE", None)
@@ -185,7 +198,7 @@ def test_nanobind_forward_auto_prefers_fused_for_medium_causal_1d(_backend_nanob
     v = mx.random.normal((1, 512, 8, 64))
     out = na1d(q, k, v, kernel_size=9, stride=1, dilation=1, is_causal=True, scale=0.5)
     mx.eval(out)
-    assert _EXT._debug_get_last_route("na1d_forward") == "fused"
+    assert _EXT._debug_get_last_route("na1d_forward") in ("fused", "v2_primitive")
 
 
 def test_nanobind_forward_mode_override_forces_fused_1d(_backend_nanobind):
@@ -197,7 +210,7 @@ def test_nanobind_forward_mode_override_forces_fused_1d(_backend_nanobind):
         v = mx.random.normal((1, 512, 8, 64))
         out = na1d(q, k, v, kernel_size=9, stride=1, dilation=1, is_causal=True, scale=0.5)
         mx.eval(out)
-        assert _EXT._debug_get_last_route("na1d_forward") == "fused"
+        assert _EXT._debug_get_last_route("na1d_forward") in ("fused", "v2_primitive")
     finally:
         if prev is None:
             os.environ.pop("NATTEN_NANOBIND_FUSED_FWD_1D_MODE", None)
@@ -217,7 +230,7 @@ def test_nanobind_split_lowp_fp32_pipeline_preserves_dtype_1d(_backend_nanobind)
         v = mx.random.normal((1, 512, 8, 64), dtype=dtype)
         out = na1d(q, k, v, kernel_size=9, stride=1, dilation=1, is_causal=True, scale=0.5)
         mx.eval(out)
-        assert _EXT._debug_get_last_route("na1d_forward") == "split"
+        assert _EXT._debug_get_last_route("na1d_forward") in ("split", "v2_primitive")
         assert out.dtype == dtype
     finally:
         if prev_split is None:
@@ -238,11 +251,13 @@ def test_nanobind_fused_forward_records_dtype_kernel(_backend_nanobind, dtype_na
     v = mx.random.normal((1, 21, 2, 16), dtype=dtype)
     out = na1d(q, k, v, kernel_size=7, stride=1, dilation=1, is_causal=True, scale=0.5)
     mx.eval(out)
-    assert _EXT._debug_get_last_route("na1d_forward") == "fused"
-    kernel = _EXT._debug_get_last_kernel("na1d_forward")
-    assert kernel
-    if dtype_name == "float16":
-        # Parity-safe routing may use fp32 fused kernels for low-precision inputs.
-        assert ("fp16" in kernel) or ("fp32" in kernel)
-    else:
-        assert "fp32" in kernel
+    route = _EXT._debug_get_last_route("na1d_forward")
+    assert route in ("fused", "v2_primitive")
+    if route == "fused":
+        kernel = _EXT._debug_get_last_kernel("na1d_forward")
+        assert kernel
+        if dtype_name == "float16":
+            # Parity-safe routing may use fp32 fused kernels for low-precision inputs.
+            assert ("fp16" in kernel) or ("fp32" in kernel)
+        else:
+            assert "fp32" in kernel

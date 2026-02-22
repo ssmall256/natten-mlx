@@ -1,14 +1,14 @@
 | Case | Direction | pure (ms) | fast_metal (ms) | nanobind (ms) | fast_metal speedup vs pure | nanobind speedup vs pure |
 |---|---:|---:|---:|---:|---:|---:|
-| `na1d_k7_s1_d1_noncausal` | `forward` | 0.838 | 0.173 | 0.174 | 4.85x | 4.80x |
-| `na1d_k7_s1_d1_noncausal` | `backward` | 0.919 | 0.279 | 0.649 | 3.29x | 1.42x |
-| `na1d_k7_s1_d1_causal` | `forward` | 0.703 | 0.172 | 0.175 | 4.09x | 4.01x |
-| `na1d_k7_s1_d1_causal` | `backward` | 0.874 | 0.272 | 0.591 | 3.21x | 1.48x |
-| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.722 | 0.260 | 0.294 | 6.63x | 5.86x |
-| `na2d_k7x7_s1_d1_noncausal` | `backward` | 1.905 | 0.469 | 0.905 | 4.07x | 2.10x |
-| `na2d_k7x7_s1_d1_causal_h` | `forward` | 1.421 | 0.260 | 0.392 | 5.47x | 3.62x |
-| `na2d_k7x7_s1_d1_causal_h` | `backward` | 1.870 | 0.479 | 1.808 | 3.90x | 1.03x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.834 | 0.184 | 0.286 | 4.53x | 2.91x |
-| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 0.981 | 0.316 | 0.697 | 3.10x | 1.41x |
-| `na3d_k3x3x3_s1_d1_causal_d` | `forward` | 0.862 | 0.171 | 0.177 | 5.05x | 4.86x |
-| `na3d_k3x3x3_s1_d1_causal_d` | `backward` | 0.946 | 0.326 | 0.765 | 2.90x | 1.24x |
+| `na1d_k7_s1_d1_noncausal` | `forward` | 0.840 | 0.195 | 0.163 | 4.30x | 5.16x |
+| `na1d_k7_s1_d1_noncausal` | `backward` | 0.934 | 0.292 | 0.223 | 3.20x | 4.19x |
+| `na1d_k7_s1_d1_causal` | `forward` | 0.655 | 0.184 | 0.153 | 3.56x | 4.28x |
+| `na1d_k7_s1_d1_causal` | `backward` | 0.834 | 0.300 | 0.236 | 2.78x | 3.53x |
+| `na2d_k7x7_s1_d1_noncausal` | `forward` | 1.703 | 0.282 | 0.239 | 6.04x | 7.13x |
+| `na2d_k7x7_s1_d1_noncausal` | `backward` | 2.062 | 0.544 | 0.496 | 3.79x | 4.16x |
+| `na2d_k7x7_s1_d1_causal_h` | `forward` | 1.472 | 0.273 | 0.259 | 5.39x | 5.69x |
+| `na2d_k7x7_s1_d1_causal_h` | `backward` | 1.883 | 0.535 | 0.495 | 3.52x | 3.80x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `forward` | 0.904 | 0.198 | 0.210 | 4.56x | 4.31x |
+| `na3d_k3x3x3_s1_d1_noncausal` | `backward` | 1.035 | 0.352 | 0.316 | 2.94x | 3.27x |
+| `na3d_k3x3x3_s1_d1_causal_d` | `forward` | 0.851 | 0.195 | 0.217 | 4.35x | 3.92x |
+| `na3d_k3x3x3_s1_d1_causal_d` | `backward` | 1.000 | 0.346 | 0.307 | 2.89x | 3.25x |

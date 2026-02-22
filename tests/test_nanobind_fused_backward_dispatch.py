@@ -90,7 +90,7 @@ def test_nanobind_fused_backward_1d_dispatch(_backend_nanobind):
     out = _grad_via_na1d(q, k, v)
     mx.eval(out)
     assert out.shape == q.shape
-    assert _EXT._debug_get_last_route("na1d_backward") == "fused"
+    assert _EXT._debug_get_last_route("na1d_backward") in ("fused", "v2_primitive")
 
 
 def test_nanobind_fused_backward_2d_dispatch(_backend_nanobind):
@@ -100,7 +100,7 @@ def test_nanobind_fused_backward_2d_dispatch(_backend_nanobind):
     out = _grad_via_na2d(q, k, v)
     mx.eval(out)
     assert out.shape == q.shape
-    assert _EXT._debug_get_last_route("na2d_backward") == "fused"
+    assert _EXT._debug_get_last_route("na2d_backward") in ("fused", "v2_primitive")
 
 
 def test_nanobind_fused_backward_3d_dispatch(_backend_nanobind):
@@ -110,10 +110,11 @@ def test_nanobind_fused_backward_3d_dispatch(_backend_nanobind):
     out = _grad_via_na3d(q, k, v)
     mx.eval(out)
     assert out.shape == q.shape
-    assert _EXT._debug_get_last_route("na3d_backward") == "fused"
+    assert _EXT._debug_get_last_route("na3d_backward") in ("fused", "v2_primitive")
 
 
-def test_nanobind_fused_backward_fallback_chain(_backend_nanobind):
+def test_nanobind_fused_backward_fallback_chain(_backend_nanobind, monkeypatch):
+    monkeypatch.setenv("NATTEN_NANOBIND_DISABLE_V2", "1")
     q = mx.random.normal((1, 21, 2, 16))
     k = mx.random.normal((1, 21, 2, 16))
     v = mx.random.normal((1, 21, 2, 16))
@@ -149,8 +150,9 @@ def test_nanobind_fused_backward_fallback_chain(_backend_nanobind):
     ],
 )
 def test_nanobind_fused_backward_qkv_1d_direct_dispatch(
-    _backend_nanobind, kernel_size, dilation, is_causal, expected_q_kernel, expected_kv_kernel
+    _backend_nanobind, monkeypatch, kernel_size, dilation, is_causal, expected_q_kernel, expected_kv_kernel
 ):
+    monkeypatch.setenv("NATTEN_NANOBIND_DISABLE_V2", "1")
     q = mx.random.normal((1, 64, 2, 16))
     k = mx.random.normal((1, 64, 2, 16))
     v = mx.random.normal((1, 64, 2, 16))
@@ -179,8 +181,9 @@ def test_nanobind_fused_backward_qkv_1d_direct_dispatch(
 
 
 def test_nanobind_fused_backward_qkv_1d_direct_dispatch_causal_k9_token_vec4(
-    _backend_nanobind,
+    _backend_nanobind, monkeypatch,
 ):
+    monkeypatch.setenv("NATTEN_NANOBIND_DISABLE_V2", "1")
     q = mx.random.normal((1, 128, 2, 64))
     k = mx.random.normal((1, 128, 2, 64))
     v = mx.random.normal((1, 128, 2, 64))
@@ -215,6 +218,7 @@ def test_nanobind_fused_backward_qkv_1d_direct_dispatch_causal_k9_token_vec4(
 
 
 def test_nanobind_fused_backward_qkv_tiled_2d_dispatch(_backend_nanobind, monkeypatch):
+    monkeypatch.setenv("NATTEN_NANOBIND_DISABLE_V2", "1")
     monkeypatch.setenv("NATTEN_NANOBIND_FUSED_BWD_QKV_STAGE", "1")
     monkeypatch.setenv("NATTEN_NANOBIND_QKV_STAGE_MODE", "tiled")
     monkeypatch.setenv("NATTEN_NANOBIND_FUSED_BWD_2D_MODE", "fused")
@@ -237,6 +241,7 @@ def test_nanobind_fused_backward_qkv_tiled_2d_dispatch(_backend_nanobind, monkey
 
 
 def test_nanobind_fused_backward_qkv_tiled_2d_k5_dispatch(_backend_nanobind, monkeypatch):
+    monkeypatch.setenv("NATTEN_NANOBIND_DISABLE_V2", "1")
     monkeypatch.setenv("NATTEN_NANOBIND_FUSED_BWD_QKV_STAGE", "1")
     monkeypatch.setenv("NATTEN_NANOBIND_QKV_STAGE_MODE", "tiled")
     monkeypatch.setenv("NATTEN_NANOBIND_FUSED_BWD_2D_MODE", "fused")
@@ -274,6 +279,7 @@ def test_nanobind_fused_backward_qkv_tiled_2d_k5_dispatch(_backend_nanobind, mon
 
 
 def test_nanobind_fused_backward_qkv_tiled_2d_k7_dispatch(_backend_nanobind, monkeypatch):
+    monkeypatch.setenv("NATTEN_NANOBIND_DISABLE_V2", "1")
     monkeypatch.setenv("NATTEN_NANOBIND_FUSED_BWD_QKV_STAGE", "1")
     monkeypatch.setenv("NATTEN_NANOBIND_QKV_STAGE_MODE", "tiled")
     monkeypatch.setenv("NATTEN_NANOBIND_FUSED_BWD_2D_MODE", "fused")
@@ -311,6 +317,7 @@ def test_nanobind_fused_backward_qkv_tiled_2d_k7_dispatch(_backend_nanobind, mon
 
 
 def test_nanobind_fused_backward_qkv_tiled_3d_dispatch(_backend_nanobind, monkeypatch):
+    monkeypatch.setenv("NATTEN_NANOBIND_DISABLE_V2", "1")
     monkeypatch.setenv("NATTEN_NANOBIND_FUSED_BWD_QKV_STAGE", "1")
     monkeypatch.setenv("NATTEN_NANOBIND_QKV_STAGE_MODE", "tiled")
     monkeypatch.setenv("NATTEN_NANOBIND_FUSED_BWD_3D_MODE", "fused")
@@ -334,6 +341,7 @@ def test_nanobind_fused_backward_qkv_tiled_3d_dispatch(_backend_nanobind, monkey
 
 
 def test_nanobind_fused_backward_qkv_tiled_3d_k5_dispatch(_backend_nanobind, monkeypatch):
+    monkeypatch.setenv("NATTEN_NANOBIND_DISABLE_V2", "1")
     monkeypatch.setenv("NATTEN_NANOBIND_FUSED_BWD_QKV_STAGE", "1")
     monkeypatch.setenv("NATTEN_NANOBIND_QKV_STAGE_MODE", "tiled")
     monkeypatch.setenv("NATTEN_NANOBIND_FUSED_BWD_3D_MODE", "fused")

@@ -1,12 +1,19 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/optional.h>
 
+#include <cmath>
 #include <string>
+
+#include <mlx/array.h>
 
 #include "nanobind/metal_runtime.h"
 #include "nanobind/na_composed.h"
 #include "nanobind/na_split_backward.h"
 #include "nanobind/na_split_forward.h"
+#include "nanobind/na1d_primitive.h"
+#include "nanobind/na2d_primitive.h"
+#include "nanobind/na3d_primitive.h"
 
 namespace nb = nanobind;
 
@@ -242,4 +249,67 @@ NB_MODULE(_nanobind_ext, m) {
     m.def("_debug_clear_launch_metrics", []() {
         natten_mlx::nanobind_metal_runtime::debug_clear_launch_metrics();
     });
+
+    {
+        namespace mx = mlx::core;
+        using namespace nb::literals;
+        m.def("_na2d_v2_forward",
+            [](const mx::array& q,
+               const mx::array& k,
+               const mx::array& v,
+               int kernel_size,
+               int stride_h, int stride_w,
+               int dilation_h, int dilation_w,
+               bool causal_h, bool causal_w,
+               float scale) {
+                return natten_mlx::na2d_fused_forward_v2(
+                    q, k, v, kernel_size,
+                    stride_h, stride_w, dilation_h, dilation_w,
+                    causal_h, causal_w, scale);
+            },
+            "q"_a, "k"_a, "v"_a,
+            "kernel_size"_a,
+            "stride_h"_a, "stride_w"_a,
+            "dilation_h"_a, "dilation_w"_a,
+            "causal_h"_a, "causal_w"_a,
+            "scale"_a);
+
+        m.def("_na1d_v2_forward",
+            [](const mx::array& q,
+               const mx::array& k,
+               const mx::array& v,
+               int kernel_size,
+               int stride, int dilation,
+               bool causal, float scale) {
+                return natten_mlx::na1d_fused_forward_v2(
+                    q, k, v, kernel_size,
+                    stride, dilation, causal, scale);
+            },
+            "q"_a, "k"_a, "v"_a,
+            "kernel_size"_a,
+            "stride"_a, "dilation"_a,
+            "causal"_a, "scale"_a);
+
+        m.def("_na3d_v2_forward",
+            [](const mx::array& q,
+               const mx::array& k,
+               const mx::array& v,
+               int kernel_size,
+               int stride_d, int stride_h, int stride_w,
+               int dilation_d, int dilation_h, int dilation_w,
+               bool causal_d, bool causal_h, bool causal_w,
+               float scale) {
+                return natten_mlx::na3d_fused_forward_v2(
+                    q, k, v, kernel_size,
+                    stride_d, stride_h, stride_w,
+                    dilation_d, dilation_h, dilation_w,
+                    causal_d, causal_h, causal_w, scale);
+            },
+            "q"_a, "k"_a, "v"_a,
+            "kernel_size"_a,
+            "stride_d"_a, "stride_h"_a, "stride_w"_a,
+            "dilation_d"_a, "dilation_h"_a, "dilation_w"_a,
+            "causal_d"_a, "causal_h"_a, "causal_w"_a,
+            "scale"_a);
+    }
 }

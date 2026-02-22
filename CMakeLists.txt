@@ -40,7 +40,13 @@ nanobind_add_module(
   ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na_fused_backward.cpp
   ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na_composed.cpp
   ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/metal_runtime.cpp
-  ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/window_semantics.cpp)
+  ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/window_semantics.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na1d_primitive.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na2d_primitive.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na3d_primitive.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na1d_bwd_primitive.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na2d_bwd_primitive.cpp
+  ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/na3d_bwd_primitive.cpp)
 
 target_include_directories(
   _nanobind_ext PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core)
@@ -54,6 +60,9 @@ if(MLX_BUILD_METAL)
     SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/natten_nb_split.metal
     ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/natten_nb_fused.metal
+    ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/natten_nb_1d_v2.metal
+    ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/natten_nb_2d_v2.metal
+    ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind/natten_nb_3d_v2.metal
     INCLUDE_DIRS
     ${CMAKE_CURRENT_LIST_DIR}/src/natten_mlx/_core/nanobind
     ${MLX_INCLUDE_DIRS}
