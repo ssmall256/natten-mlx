@@ -149,6 +149,32 @@ Median latency (ms, lower is better) on Apple Silicon:
 
 Full benchmarks with causal configurations: `benchmarks/final-perf.md`.
 
+### Cross-framework: natten-mlx vs natten-mps
+
+Apple Silicon (M-series), fp32, B=1 H=4 D=32:
+
+| Config | natten-mlx (MLX) | natten-mps (MPS) | MLX speedup |
+|---|---|---|---|
+| 1D L=256 K=7 fwd | 0.24 ms | 0.42 ms | 1.8× |
+| 1D L=1024 K=7 fwd | 0.45 ms | 1.12 ms | 2.5× |
+| 2D 32×32 K=7 fwd | 0.42 ms | 0.96 ms | 2.3× |
+| 2D 64×64 K=7 fwd | 1.52 ms | 3.23 ms | 2.1× |
+| 3D 16³ K=3 fwd | 0.22 ms | 0.56 ms | 2.6× |
+| 1D L=256 K=7 bwd | 0.19 ms | 0.56 ms | 2.9× |
+| 2D 32×32 K=7 bwd | 0.48 ms | 1.73 ms | 3.6× |
+
+MLX's compiled Metal primitives have lower dispatch overhead than PyTorch MPS, giving a consistent 2–3× advantage. Both are orders of magnitude faster than pure-framework baselines.
+
+### Apple Silicon vs CUDA GPUs — backward pass
+
+NATTEN's CUDA backward pass has known performance issues for 3D and large 2D workloads. Apple Silicon backward passes are competitive with — and sometimes faster than — datacenter GPUs:
+
+| Config | natten-mlx bwd | A100 CUDA bwd |
+|---|---|---|
+| 3D 32³ K=3 | 5.7 ms | 458 ms (default) / 11.8 ms (KV-parallel) |
+
+The 3D backward advantage comes from our optimized gradient kernels. NATTEN's default CUDA 3D backward has a known O(n³·K³) scaling issue; even with the KV-parallel fix, Apple Silicon matches A100 performance. See NATTEN GitHub issues [#157](https://github.com/SHI-Labs/NATTEN/issues/157) (A100/H100 3D backward) and [#161](https://github.com/SHI-Labs/NATTEN/issues/161) (A40 2D/3D backward) for the CUDA reference numbers.
+
 ## Limitations
 
 - Metal kernel acceleration requires odd kernel sizes (1D: K≤63, 2D: K≤13, 3D: K≤7).

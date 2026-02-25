@@ -26,40 +26,183 @@ from natten_mlx.utils.params import (
 )
 
 
-def _validate_1d_qkv(query: mx.array, key: mx.array, value: mx.array) -> tuple[int, int, int, int]:
-    if query.ndim != 4:
-        raise ValueError(f"query must be 4D [B, L, H, D], got shape {query.shape}")
-    if key.shape != query.shape or value.shape != query.shape:
+def _repeat_kv(x: mx.array, n_rep: int) -> mx.array:
+    """Expand KV heads to match Q heads for GQA/MQA."""
+    if n_rep == 1:
+        return x
+    return mx.repeat(x, n_rep, axis=-2)
+
+
+def _validate_qkv(query: mx.array, key: mx.array, value: mx.array, rank: int) -> int:
+    """Validate Q/K/V shapes with GQA support. Returns kv_repeat factor."""
+    expected_ndim = rank + 3
+    layouts = {1: "[B, L, H, D]", 2: "[B, H, W, heads, dim]", 3: "[B, D, H, W, heads, dim]"}
+    if query.ndim != expected_ndim or key.ndim != expected_ndim or value.ndim != expected_ndim:
+        raise ValueError(f"na{rank}d expects query/key/value with shape {layouts[rank]}.")
+
+    spatial_q = query.shape[1:-2]
+    spatial_k = key.shape[1:-2]
+    spatial_v = value.shape[1:-2]
+    if spatial_q != spatial_k or spatial_q != spatial_v:
         raise ValueError(
-            "query, key, and value must have the same shape for 1D attention; "
-            f"got {query.shape}, {key.shape}, {value.shape}"
+            f"Spatial dimensions must match: Q={spatial_q}, K={spatial_k}, V={spatial_v}."
         )
+
+    if query.shape[0] != key.shape[0] or query.shape[0] != value.shape[0]:
+        raise ValueError("Batch dimensions must match.")
+
+    heads_q, dim_q = query.shape[-2], query.shape[-1]
+    heads_kv, dim_k = key.shape[-2], key.shape[-1]
+    if dim_q != dim_k:
+        raise ValueError(f"Head dim must match: Q has {dim_q}, K has {dim_k}.")
+    if key.shape[-2] != value.shape[-2]:
+        raise ValueError("K and V must have same number of heads.")
+    if key.shape[-1] != value.shape[-1]:
+        raise ValueError(f"Head dim must match: K has {dim_k}, V has {value.shape[-1]}.")
+
+    if heads_q % heads_kv != 0:
+        raise ValueError(
+            f"heads_q ({heads_q}) must be divisible by heads_kv ({heads_kv}) for GQA."
+        )
+
+    return heads_q // heads_kv
+
+
+def _full_attn_with_lse(
+    query: mx.array, key: mx.array, value: mx.array, scale: float
+) -> tuple[mx.array, mx.array]:
+    """Full (non-neighborhood) attention with LSE return.
+
+    Q: [B, ..spatial.., H, D], K/V: [B, N_extra, H, D].
+    Returns (output, lse) where output has Q's spatial shape and lse has shape
+    [B, ..spatial.., H].
+    """
+    spatial_dims = query.shape[1:-2]
+    B, H, D = query.shape[0], query.shape[-2], query.shape[-1]
+
+    # Flatten spatial dims: [B, S, H, D]
+    S = 1
+    for s in spatial_dims:
+        S *= s
+    q_flat = query.reshape(B, S, H, D)
+
+    # [B, H, S, D] and [B, H, N_extra, D]
+    q_t = mx.transpose(q_flat, axes=(0, 2, 1, 3))
+    k_t = mx.transpose(key, axes=(0, 2, 1, 3))
+    logits = (q_t @ mx.transpose(k_t, axes=(0, 1, 3, 2))) * scale  # [B, H, S, N_extra]
+
+    lse = mx.logsumexp(logits, axis=-1)    # [B, H, S]
+    attn = mx.softmax(logits, axis=-1)     # [B, H, S, N_extra]
+
+    v_t = mx.transpose(value, axes=(0, 2, 1, 3))  # [B, H, N_extra, D]
+    out = attn @ v_t  # [B, H, S, D]
+
+    # Back to [B, ..spatial.., H, D]
+    out = mx.transpose(out, axes=(0, 2, 1, 3)).reshape(*([B] + list(spatial_dims) + [H, D]))
+    lse = mx.transpose(lse, axes=(0, 2, 1)).reshape(*([B] + list(spatial_dims) + [H]))
+
+    return out, lse
+
+
+def _validate_additional_kv(
+    query: mx.array,
+    additional_keys: Optional[mx.array],
+    additional_values: Optional[mx.array],
+    kv_repeat: int,
+) -> tuple[Optional[mx.array], Optional[mx.array]]:
+    """Validate and optionally expand additional K/V for GQA."""
+    if additional_keys is None and additional_values is None:
+        return None, None
+    if additional_keys is None or additional_values is None:
+        raise ValueError("additional_keys and additional_values must both be provided or both None.")
+
+    if additional_keys.ndim != 4 or additional_values.ndim != 4:
+        raise ValueError(
+            "additional_keys/additional_values must be 4D: [B, N_extra, heads_kv, dim]."
+        )
+    if additional_keys.shape[0] != query.shape[0]:
+        raise ValueError("additional_keys batch must match query batch.")
+    if additional_values.shape[0] != query.shape[0]:
+        raise ValueError("additional_values batch must match query batch.")
+    if additional_keys.shape[-1] != query.shape[-1]:
+        raise ValueError("additional_keys head dim must match query head dim.")
+    if additional_values.shape[-1] != query.shape[-1]:
+        raise ValueError("additional_values head dim must match query head dim.")
+    if additional_keys.shape[-2] != additional_values.shape[-2]:
+        raise ValueError("additional_keys and additional_values must have same number of heads.")
+    if additional_keys.shape[1] != additional_values.shape[1]:
+        raise ValueError("additional_keys and additional_values must have same N_extra.")
+
+    ak = _repeat_kv(additional_keys, kv_repeat)
+    av = _repeat_kv(additional_values, kv_repeat)
+    return ak, av
+
+
+def _is_full_attention(kernel_size: tuple, spatial_shape: tuple) -> bool:
+    """Check if kernel covers all spatial dims (NA degenerates to global attention)."""
+    return all(ks >= s for ks, s in zip(kernel_size, spatial_shape))
+
+
+def _sdpa_forward(
+    query: mx.array,
+    key: mx.array,
+    value: mx.array,
+    scale: float,
+    spatial_shape: tuple,
+    return_lse: bool = False,
+    additional_keys=None,
+    additional_values=None,
+) -> mx.array:
+    """Full-attention fast path via SDPA when kernel covers entire spatial extent."""
+    B, H, D = query.shape[0], query.shape[-2], query.shape[-1]
+
+    S = 1
+    for s in spatial_shape:
+        S *= s
+
+    k_flat = key.reshape(B, S, H, D)
+    v_flat = value.reshape(B, S, H, D)
+
+    if additional_keys is not None:
+        k_flat = mx.concatenate([k_flat, additional_keys], axis=1)
+        v_flat = mx.concatenate([v_flat, additional_values], axis=1)
+
+    q_flat = query.reshape(B, -1, H, D)
+
+    # MLX SDPA expects [B, H, S, D] (heads before sequence)
+    q_t = mx.transpose(q_flat, axes=(0, 2, 1, 3))
+    k_t = mx.transpose(k_flat, axes=(0, 2, 1, 3))
+    v_t = mx.transpose(v_flat, axes=(0, 2, 1, 3))
+    out = mx.fast.scaled_dot_product_attention(q_t, k_t, v_t, scale=scale)
+    out = mx.transpose(out, axes=(0, 2, 1, 3))  # back to [B, S, H, D]
+    out = out.reshape(*([B] + list(spatial_shape) + [H, D]))
+
+    if return_lse:
+        # Compute LSE
+        q_t = mx.transpose(q_flat, axes=(0, 2, 1, 3))
+        k_t = mx.transpose(k_flat, axes=(0, 2, 1, 3))
+        logits = (q_t @ mx.transpose(k_t, axes=(0, 1, 3, 2))) * scale
+        lse = mx.logsumexp(logits, axis=-1)
+        lse = mx.transpose(lse, axes=(0, 2, 1)).reshape(*([B] + list(spatial_shape) + [H]))
+        return out, lse
+
+    return out
+
+
+def _validate_1d_qkv(query: mx.array, key: mx.array, value: mx.array) -> tuple[int, int, int, int]:
+    _validate_qkv(query, key, value, 1)
     return tuple(query.shape)
 
 
 def _validate_2d_qkv(query: mx.array, key: mx.array, value: mx.array) -> tuple[int, int, int, int, int]:
-    if query.ndim != 5:
-        raise ValueError(f"query must be 5D [B, H, W, heads, head_dim], got {query.shape}")
-    if key.shape != query.shape or value.shape != query.shape:
-        raise ValueError(
-            "query, key, and value must have the same shape for 2D attention; "
-            f"got {query.shape}, {key.shape}, {value.shape}"
-        )
+    _validate_qkv(query, key, value, 2)
     return tuple(query.shape)
 
 
 def _validate_3d_qkv(
     query: mx.array, key: mx.array, value: mx.array
 ) -> tuple[int, int, int, int, int, int]:
-    if query.ndim != 6:
-        raise ValueError(
-            f"query must be 6D [B, D, H, W, heads, head_dim], got {query.shape}"
-        )
-    if key.shape != query.shape or value.shape != query.shape:
-        raise ValueError(
-            "query, key, and value must have the same shape for 3D attention; "
-            f"got {query.shape}, {key.shape}, {value.shape}"
-        )
+    _validate_qkv(query, key, value, 3)
     return tuple(query.shape)
 
 
@@ -72,21 +215,57 @@ def na1d(
     dilation: Union[int, Tuple[int]] = 1,
     is_causal: Union[bool, Tuple[bool]] = False,
     scale: Optional[float] = None,
-) -> mx.array:
+    return_lse: bool = False,
+    additional_keys: Optional[mx.array] = None,
+    additional_values: Optional[mx.array] = None,
+) -> Union[mx.array, Tuple[mx.array, mx.array]]:
     """1D neighborhood attention.
 
     Layout: [batch, seqlen, heads, head_dim].
     """
-    _, seqlen, _, _ = _validate_1d_qkv(query, key, value)
+    kv_repeat = _validate_qkv(query, key, value, 1)
+    add_k, add_v = _validate_additional_kv(query, additional_keys, additional_values, kv_repeat)
+    _, seqlen, _, head_dim = query.shape
+
+    key = _repeat_kv(key, kv_repeat)
+    value = _repeat_kv(value, kv_repeat)
 
     ks = normalize_kernel_size(kernel_size, 1)
     st = normalize_tuple_param(stride, 1, "stride")
     dil = normalize_tuple_param(dilation, 1, "dilation")
     caus = normalize_tuple_param(is_causal, 1, "is_causal")
 
-    check_kernel_size_vs_input(ks, (seqlen,))
+    spatial_shape = (seqlen,)
+    check_kernel_size_vs_input(ks, spatial_shape)
     check_stride_vs_kernel(st, ks)
-    check_dilation_kernel_vs_input(dil, ks, (seqlen,))
+    check_dilation_kernel_vs_input(dil, ks, spatial_shape)
+
+    scale_value = head_dim ** -0.5 if scale is None else float(scale)
+
+    # FMHA fast path: kernel covers all spatial dims → use SDPA
+    if _is_full_attention(ks, spatial_shape) and all(s == 1 for s in st) and not any(caus):
+        return _sdpa_forward(
+            query, key, value, scale_value, spatial_shape,
+            return_lse=return_lse, additional_keys=add_k, additional_values=add_v,
+        )
+
+    has_additional = add_k is not None
+
+    if has_additional or return_lse:
+        logits = na1d_qk(query, key, kernel_size=ks, dilation=dil, stride=st, is_causal=caus)
+        logits_scaled = logits * scale_value
+        lse = mx.logsumexp(logits_scaled, axis=-1)
+        attn = mx.softmax(logits_scaled, axis=-1)
+        out = na1d_av(attn, value, kernel_size=ks, dilation=dil, stride=st, is_causal=caus)
+
+        if has_additional:
+            from natten_mlx.merge import merge_attentions
+            out_extra, lse_extra = _full_attn_with_lse(query, add_k, add_v, scale_value)
+            out, lse = merge_attentions([out, out_extra], [lse, lse_extra])
+
+        if return_lse:
+            return out, lse
+        return out
 
     return na1d_with_grad(query, key, value, ks, st, dil, caus, scale)
 
@@ -100,21 +279,57 @@ def na2d(
     dilation: Union[int, Tuple[int, int]] = 1,
     is_causal: Union[bool, Tuple[bool, bool]] = False,
     scale: Optional[float] = None,
-) -> mx.array:
+    return_lse: bool = False,
+    additional_keys: Optional[mx.array] = None,
+    additional_values: Optional[mx.array] = None,
+) -> Union[mx.array, Tuple[mx.array, mx.array]]:
     """2D neighborhood attention.
 
     Layout: [batch, height, width, heads, head_dim].
     """
-    _, height, width, _, _ = _validate_2d_qkv(query, key, value)
+    kv_repeat = _validate_qkv(query, key, value, 2)
+    add_k, add_v = _validate_additional_kv(query, additional_keys, additional_values, kv_repeat)
+    _, height, width, _, head_dim = query.shape
+
+    key = _repeat_kv(key, kv_repeat)
+    value = _repeat_kv(value, kv_repeat)
 
     ks = normalize_kernel_size(kernel_size, 2)
     st = normalize_tuple_param(stride, 2, "stride")
     dil = normalize_tuple_param(dilation, 2, "dilation")
     caus = normalize_tuple_param(is_causal, 2, "is_causal")
 
-    check_kernel_size_vs_input(ks, (height, width))
+    spatial_shape = (height, width)
+    check_kernel_size_vs_input(ks, spatial_shape)
     check_stride_vs_kernel(st, ks)
-    check_dilation_kernel_vs_input(dil, ks, (height, width))
+    check_dilation_kernel_vs_input(dil, ks, spatial_shape)
+
+    scale_value = head_dim ** -0.5 if scale is None else float(scale)
+
+    # FMHA fast path: kernel covers all spatial dims → use SDPA
+    if _is_full_attention(ks, spatial_shape) and all(s == 1 for s in st) and not any(caus):
+        return _sdpa_forward(
+            query, key, value, scale_value, spatial_shape,
+            return_lse=return_lse, additional_keys=add_k, additional_values=add_v,
+        )
+
+    has_additional = add_k is not None
+
+    if has_additional or return_lse:
+        logits = na2d_qk(query, key, kernel_size=ks, dilation=dil, stride=st, is_causal=caus)
+        logits_scaled = logits * scale_value
+        lse = mx.logsumexp(logits_scaled, axis=-1)
+        attn = mx.softmax(logits_scaled, axis=-1)
+        out = na2d_av(attn, value, kernel_size=ks, dilation=dil, stride=st, is_causal=caus)
+
+        if has_additional:
+            from natten_mlx.merge import merge_attentions
+            out_extra, lse_extra = _full_attn_with_lse(query, add_k, add_v, scale_value)
+            out, lse = merge_attentions([out, out_extra], [lse, lse_extra])
+
+        if return_lse:
+            return out, lse
+        return out
 
     return na2d_with_grad(query, key, value, ks, st, dil, caus, scale)
 
@@ -128,21 +343,57 @@ def na3d(
     dilation: Union[int, Tuple[int, int, int]] = 1,
     is_causal: Union[bool, Tuple[bool, bool, bool]] = False,
     scale: Optional[float] = None,
-) -> mx.array:
+    return_lse: bool = False,
+    additional_keys: Optional[mx.array] = None,
+    additional_values: Optional[mx.array] = None,
+) -> Union[mx.array, Tuple[mx.array, mx.array]]:
     """3D neighborhood attention.
 
     Layout: [batch, depth, height, width, heads, head_dim].
     """
-    _, depth, height, width, _, _ = _validate_3d_qkv(query, key, value)
+    kv_repeat = _validate_qkv(query, key, value, 3)
+    add_k, add_v = _validate_additional_kv(query, additional_keys, additional_values, kv_repeat)
+    _, depth, height, width, _, head_dim = query.shape
+
+    key = _repeat_kv(key, kv_repeat)
+    value = _repeat_kv(value, kv_repeat)
 
     ks = normalize_kernel_size(kernel_size, 3)
     st = normalize_tuple_param(stride, 3, "stride")
     dil = normalize_tuple_param(dilation, 3, "dilation")
     caus = normalize_tuple_param(is_causal, 3, "is_causal")
 
-    check_kernel_size_vs_input(ks, (depth, height, width))
+    spatial_shape = (depth, height, width)
+    check_kernel_size_vs_input(ks, spatial_shape)
     check_stride_vs_kernel(st, ks)
-    check_dilation_kernel_vs_input(dil, ks, (depth, height, width))
+    check_dilation_kernel_vs_input(dil, ks, spatial_shape)
+
+    scale_value = head_dim ** -0.5 if scale is None else float(scale)
+
+    # FMHA fast path: kernel covers all spatial dims → use SDPA
+    if _is_full_attention(ks, spatial_shape) and all(s == 1 for s in st) and not any(caus):
+        return _sdpa_forward(
+            query, key, value, scale_value, spatial_shape,
+            return_lse=return_lse, additional_keys=add_k, additional_values=add_v,
+        )
+
+    has_additional = add_k is not None
+
+    if has_additional or return_lse:
+        logits = na3d_qk(query, key, kernel_size=ks, dilation=dil, stride=st, is_causal=caus)
+        logits_scaled = logits * scale_value
+        lse = mx.logsumexp(logits_scaled, axis=-1)
+        attn = mx.softmax(logits_scaled, axis=-1)
+        out = na3d_av(attn, value, kernel_size=ks, dilation=dil, stride=st, is_causal=caus)
+
+        if has_additional:
+            from natten_mlx.merge import merge_attentions
+            out_extra, lse_extra = _full_attn_with_lse(query, add_k, add_v, scale_value)
+            out, lse = merge_attentions([out, out_extra], [lse, lse_extra])
+
+        if return_lse:
+            return out, lse
+        return out
 
     return na3d_with_grad(query, key, value, ks, st, dil, caus, scale)
 
