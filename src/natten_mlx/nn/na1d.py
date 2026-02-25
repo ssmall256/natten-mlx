@@ -14,6 +14,13 @@ class NeighborhoodAttention1D(nn.Module):
 
     Input:  [B, L, C]
     Output: [B, ceil(L/stride), C]
+
+    Args:
+        embed_dim: Total embedding dimension.
+        num_heads: Number of query attention heads.
+        kernel_size: Neighborhood window size.
+        num_kv_heads: Number of key/value heads for GQA/MQA.  When ``None``
+            (default) it equals ``num_heads`` (standard MHA).
     """
 
     def __init__(
@@ -24,6 +31,7 @@ class NeighborhoodAttention1D(nn.Module):
         stride=1,
         dilation=1,
         is_causal=False,
+        num_kv_heads=None,
         qkv_bias: bool = True,
         qk_scale=None,
         attn_drop: float = 0.0,
@@ -40,6 +48,13 @@ class NeighborhoodAttention1D(nn.Module):
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
+        self.num_kv_heads = int(num_kv_heads) if num_kv_heads is not None else self.num_heads
+
+        if self.num_heads % self.num_kv_heads != 0:
+            raise ValueError(
+                f"num_heads ({self.num_heads}) must be divisible by "
+                f"num_kv_heads ({self.num_kv_heads})"
+            )
 
         self.kernel_size = normalize_tuple_param(kernel_size, 1, "kernel_size")
         self.stride = normalize_tuple_param(stride, 1, "stride")
@@ -47,7 +62,13 @@ class NeighborhoodAttention1D(nn.Module):
         self.is_causal = normalize_tuple_param(is_causal, 1, "is_causal")
         self.scale = float(qk_scale) if qk_scale is not None else self.head_dim ** -0.5
 
-        self.qkv = nn.Linear(embed_dim, embed_dim * 3, bias=qkv_bias)
+        self._use_gqa = self.num_kv_heads != self.num_heads
+        if self._use_gqa:
+            self.q_proj = nn.Linear(embed_dim, self.num_heads * self.head_dim, bias=qkv_bias)
+            self.kv_proj = nn.Linear(embed_dim, 2 * self.num_kv_heads * self.head_dim, bias=qkv_bias)
+        else:
+            self.qkv = nn.Linear(embed_dim, embed_dim * 3, bias=qkv_bias)
+
         self.attn_drop_rate = float(attn_drop)
         self.attn_drop = nn.Dropout(self.attn_drop_rate) if self.attn_drop_rate > 0.0 else None
         self.proj = nn.Linear(embed_dim, embed_dim)
@@ -64,11 +85,19 @@ class NeighborhoodAttention1D(nn.Module):
                 f"Input channel dim ({channels}) must match embed_dim ({self.embed_dim})"
             )
 
-        qkv = self.qkv(x).reshape(batch, length, 3, self.num_heads, self.head_dim)
-        q, k, v = mx.split(qkv, 3, axis=2)
-        q = q.squeeze(2)
-        k = k.squeeze(2)
-        v = v.squeeze(2)
+        if self._use_gqa:
+            q = self.q_proj(x).reshape(batch, length, self.num_heads, self.head_dim)
+            kv = self.kv_proj(x).reshape(batch, length, 2, self.num_kv_heads, self.head_dim)
+            k, v = mx.split(kv, 2, axis=2)
+            k = k.squeeze(2)
+            v = v.squeeze(2)
+        else:
+            qkv = self.qkv(x).reshape(batch, length, 3, self.num_heads, self.head_dim)
+            q, k, v = mx.split(qkv, 3, axis=2)
+            q = q.squeeze(2)
+            k = k.squeeze(2)
+            v = v.squeeze(2)
+
         if self.attn_drop_rate > 0.0:
             logits = na1d_qk(
                 q,
