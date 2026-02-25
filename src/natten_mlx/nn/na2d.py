@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Optional, Tuple, Union
+
 import mlx.core as mx
 import mlx.nn as nn
 
@@ -27,13 +29,13 @@ class NeighborhoodAttention2D(nn.Module):
         self,
         embed_dim: int,
         num_heads: int,
-        kernel_size,
-        stride=1,
-        dilation=1,
-        is_causal=False,
-        num_kv_heads=None,
+        kernel_size: Union[int, Tuple[int, ...]],
+        stride: Union[int, Tuple[int, ...]] = 1,
+        dilation: Union[int, Tuple[int, ...]] = 1,
+        is_causal: Union[bool, Tuple[bool, ...]] = False,
+        num_kv_heads: Optional[int] = None,
         qkv_bias: bool = True,
-        qk_scale=None,
+        qk_scale: Optional[float] = None,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
     ):

@@ -28,8 +28,15 @@ from natten_mlx.merge import merge_attentions
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _seed(seed: int = 42):
+    mx.random.seed(seed)
+
+
 def _rand(*shape, dtype=mx.float32):
     return mx.random.normal(shape).astype(dtype)
+
+
+_randn = _rand  # alias used by backward tests
 
 
 def _allclose(a, b, atol=1e-3, rtol=1e-3):
@@ -706,3 +713,459 @@ class TestFMHAFastPath:
         out = na3d(q, k, v, kernel_size=(Dd, Hh, W))
         mx.eval(out)
         assert out.shape == (B, Dd, Hh, W, H, D)
+
+
+# ===================================================================
+# 7. Backward / Gradient Tests for New Features
+# ===================================================================
+
+
+class TestReturnLSEBackward:
+    """Gradient tests for return_lse feature."""
+
+    def test_na1d_return_lse_backward(self):
+        _seed()
+        q = _randn(1, 12, 2, 8)
+        k = _randn(1, 12, 2, 8)
+        v = _randn(1, 12, 2, 8)
+
+        def loss_fn(q_in, k_in, v_in):
+            out, lse = na1d(q_in, k_in, v_in, kernel_size=5, return_lse=True)
+            return mx.sum(out) + mx.sum(lse)
+
+        grad_fn = mx.grad(loss_fn, argnums=(0, 1, 2))
+        grads = grad_fn(q, k, v)
+        mx.eval(*grads)
+        assert grads[0].shape == q.shape
+        assert grads[1].shape == k.shape
+        assert grads[2].shape == v.shape
+
+    def test_na1d_return_lse_backward_causal(self):
+        _seed()
+        q = _randn(1, 12, 2, 8)
+        k = _randn(1, 12, 2, 8)
+        v = _randn(1, 12, 2, 8)
+
+        def loss_fn(q_in, k_in, v_in):
+            out, lse = na1d(q_in, k_in, v_in, kernel_size=5, is_causal=True, return_lse=True)
+            return mx.sum(out) + mx.sum(lse)
+
+        grads = mx.grad(loss_fn, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*grads)
+        assert grads[0].shape == q.shape
+
+    def test_na2d_return_lse_backward(self):
+        _seed()
+        q = _randn(1, 8, 8, 2, 8)
+        k = _randn(1, 8, 8, 2, 8)
+        v = _randn(1, 8, 8, 2, 8)
+
+        def loss_fn(q_in, k_in, v_in):
+            out, lse = na2d(q_in, k_in, v_in, kernel_size=5, return_lse=True)
+            return mx.sum(out) + mx.sum(lse)
+
+        grads = mx.grad(loss_fn, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*grads)
+        assert grads[0].shape == q.shape
+        assert grads[1].shape == k.shape
+        assert grads[2].shape == v.shape
+
+
+class TestGQABackward:
+    """Gradient tests for GQA/MQA feature."""
+
+    def test_na1d_gqa_backward(self):
+        _seed()
+        B, L, D = 1, 12, 8
+        heads_q, heads_kv = 4, 2
+        q = _randn(B, L, heads_q, D)
+        k = _randn(B, L, heads_kv, D)
+        v = _randn(B, L, heads_kv, D)
+
+        def loss_fn(q_in, k_in, v_in):
+            return mx.sum(na1d(q_in, k_in, v_in, kernel_size=5))
+
+        grads = mx.grad(loss_fn, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*grads)
+        assert grads[0].shape == (B, L, heads_q, D)
+        assert grads[1].shape == (B, L, heads_kv, D)
+        assert grads[2].shape == (B, L, heads_kv, D)
+
+    def test_na1d_mqa_backward(self):
+        _seed()
+        B, L, D = 1, 12, 8
+        heads_q, heads_kv = 4, 1
+        q = _randn(B, L, heads_q, D)
+        k = _randn(B, L, heads_kv, D)
+        v = _randn(B, L, heads_kv, D)
+
+        def loss_fn(q_in, k_in, v_in):
+            return mx.sum(na1d(q_in, k_in, v_in, kernel_size=5))
+
+        grads = mx.grad(loss_fn, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*grads)
+        assert grads[0].shape == (B, L, heads_q, D)
+        assert grads[1].shape == (B, L, heads_kv, D)
+        assert grads[2].shape == (B, L, heads_kv, D)
+
+    def test_na2d_gqa_backward(self):
+        _seed()
+        B, Hh, W, D = 1, 8, 8, 8
+        heads_q, heads_kv = 4, 2
+        q = _randn(B, Hh, W, heads_q, D)
+        k = _randn(B, Hh, W, heads_kv, D)
+        v = _randn(B, Hh, W, heads_kv, D)
+
+        def loss_fn(q_in, k_in, v_in):
+            return mx.sum(na2d(q_in, k_in, v_in, kernel_size=5))
+
+        grads = mx.grad(loss_fn, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*grads)
+        assert grads[0].shape == (B, Hh, W, heads_q, D)
+        assert grads[1].shape == (B, Hh, W, heads_kv, D)
+        assert grads[2].shape == (B, Hh, W, heads_kv, D)
+
+
+class TestAdditionalKVBackward:
+    """Gradient tests for additional_keys/additional_values."""
+
+    def test_na1d_additional_kv_backward(self):
+        _seed()
+        B, L, H, D = 1, 12, 2, 8
+        q = _randn(B, L, H, D)
+        k = _randn(B, L, H, D)
+        v = _randn(B, L, H, D)
+        ak = _randn(B, 2, H, D)
+        av = _randn(B, 2, H, D)
+
+        def loss_fn(q_in, k_in, v_in, ak_in, av_in):
+            return mx.sum(na1d(q_in, k_in, v_in, kernel_size=5,
+                              additional_keys=ak_in, additional_values=av_in))
+
+        grads = mx.grad(loss_fn, argnums=(0, 1, 2, 3, 4))(q, k, v, ak, av)
+        mx.eval(*grads)
+        assert grads[0].shape == q.shape
+        assert grads[1].shape == k.shape
+        assert grads[2].shape == v.shape
+        assert grads[3].shape == ak.shape
+        assert grads[4].shape == av.shape
+
+    def test_na2d_additional_kv_backward(self):
+        _seed()
+        B, Hh, W, H, D = 1, 8, 8, 2, 8
+        q = _randn(B, Hh, W, H, D)
+        k = _randn(B, Hh, W, H, D)
+        v = _randn(B, Hh, W, H, D)
+        ak = _randn(B, 2, H, D)
+        av = _randn(B, 2, H, D)
+
+        def loss_fn(q_in, k_in, v_in, ak_in, av_in):
+            return mx.sum(na2d(q_in, k_in, v_in, kernel_size=5,
+                              additional_keys=ak_in, additional_values=av_in))
+
+        grads = mx.grad(loss_fn, argnums=(0, 1, 2, 3, 4))(q, k, v, ak, av)
+        mx.eval(*grads)
+        assert grads[0].shape == q.shape
+        assert grads[3].shape == ak.shape
+        assert grads[4].shape == av.shape
+
+    def test_na3d_additional_kv_backward(self):
+        _seed()
+        B = 1
+        D_s, Hh_s, W_s = 4, 4, 4
+        H, D = 2, 8
+        q = _randn(B, D_s, Hh_s, W_s, H, D)
+        k = _randn(B, D_s, Hh_s, W_s, H, D)
+        v = _randn(B, D_s, Hh_s, W_s, H, D)
+        ak = _randn(B, 1, H, D)
+        av = _randn(B, 1, H, D)
+
+        def loss_fn(q_in, k_in, v_in, ak_in, av_in):
+            return mx.sum(na3d(q_in, k_in, v_in, kernel_size=3,
+                              additional_keys=ak_in, additional_values=av_in))
+
+        grads = mx.grad(loss_fn, argnums=(0, 1, 2, 3, 4))(q, k, v, ak, av)
+        mx.eval(*grads)
+        assert grads[0].shape == q.shape
+        assert grads[3].shape == ak.shape
+        assert grads[4].shape == av.shape
+
+
+class TestMergeAttentionsBackward:
+    """Gradient tests for merge_attentions."""
+
+    def test_merge_2way_backward_1d(self):
+        _seed()
+        B, L, H, D = 1, 12, 2, 8
+        ks = 5
+        q = _randn(B, L, H, D)
+        k1 = _randn(B, L, H, D)
+        v1 = _randn(B, L, H, D)
+        k2 = _randn(B, L, H, D)
+        v2 = _randn(B, L, H, D)
+
+        def loss_fn(q_in, k1_in, v1_in, k2_in, v2_in):
+            out1, lse1 = na1d(q_in, k1_in, v1_in, kernel_size=ks, return_lse=True)
+            out2, lse2 = na1d(q_in, k2_in, v2_in, kernel_size=ks, return_lse=True)
+            merged, merged_lse = merge_attentions([out1, out2], [lse1, lse2])
+            return mx.sum(merged) + mx.sum(merged_lse)
+
+        grads = mx.grad(loss_fn, argnums=(0, 1, 2, 3, 4))(q, k1, v1, k2, v2)
+        mx.eval(*grads)
+        assert grads[0].shape == q.shape
+        assert grads[1].shape == k1.shape
+
+
+class TestFMHAFastPathBackward:
+    """Gradient tests for FMHA fast path."""
+
+    def test_na1d_fmha_backward(self):
+        _seed()
+        B, L, H, D = 1, 10, 2, 8
+        q = _randn(B, L, H, D)
+        k = _randn(B, L, H, D)
+        v = _randn(B, L, H, D)
+
+        def loss_fn(q_in, k_in, v_in):
+            return mx.sum(na1d(q_in, k_in, v_in, kernel_size=L))
+
+        grads = mx.grad(loss_fn, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*grads)
+        assert grads[0].shape == q.shape
+        assert grads[1].shape == k.shape
+        assert grads[2].shape == v.shape
+
+    def test_na2d_fmha_backward(self):
+        _seed()
+        B, Hh, W, H, D = 1, 6, 8, 2, 8
+        q = _randn(B, Hh, W, H, D)
+        k = _randn(B, Hh, W, H, D)
+        v = _randn(B, Hh, W, H, D)
+
+        def loss_fn(q_in, k_in, v_in):
+            return mx.sum(na2d(q_in, k_in, v_in, kernel_size=(Hh, W)))
+
+        grads = mx.grad(loss_fn, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*grads)
+        assert grads[0].shape == q.shape
+        assert grads[1].shape == k.shape
+        assert grads[2].shape == v.shape
+
+    def test_na1d_fmha_with_return_lse_backward(self):
+        _seed()
+        B, L, H, D = 1, 10, 2, 8
+        q = _randn(B, L, H, D)
+        k = _randn(B, L, H, D)
+        v = _randn(B, L, H, D)
+
+        def loss_fn(q_in, k_in, v_in):
+            out, lse = na1d(q_in, k_in, v_in, kernel_size=L, return_lse=True)
+            return mx.sum(out) + mx.sum(lse)
+
+        grads = mx.grad(loss_fn, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*grads)
+        assert grads[0].shape == q.shape
+
+
+# ===================================================================
+# 8. Combination Tests (feature interactions)
+# ===================================================================
+
+
+class TestFeatureCombinations:
+    """Tests for combinations of new features to verify they compose correctly."""
+
+    def test_gqa_with_return_lse_1d(self):
+        _seed()
+        B, L, D = 1, 12, 8
+        heads_q, heads_kv = 4, 2
+        q = _rand(B, L, heads_q, D)
+        k = _rand(B, L, heads_kv, D)
+        v = _rand(B, L, heads_kv, D)
+        out, lse = na1d(q, k, v, kernel_size=5, return_lse=True)
+        mx.eval(out, lse)
+        assert out.shape == (B, L, heads_q, D)
+        assert lse.shape == (B, L, heads_q)
+        assert mx.all(mx.isfinite(lse))
+
+    def test_gqa_with_return_lse_2d(self):
+        _seed()
+        B, Hh, W, D = 1, 8, 8, 8
+        heads_q, heads_kv = 4, 2
+        q = _rand(B, Hh, W, heads_q, D)
+        k = _rand(B, Hh, W, heads_kv, D)
+        v = _rand(B, Hh, W, heads_kv, D)
+        out, lse = na2d(q, k, v, kernel_size=5, return_lse=True)
+        mx.eval(out, lse)
+        assert out.shape == (B, Hh, W, heads_q, D)
+        assert lse.shape == (B, Hh, W, heads_q)
+
+    def test_gqa_causal_return_lse_1d(self):
+        _seed()
+        B, L, D = 1, 12, 8
+        heads_q, heads_kv = 4, 2
+        q = _rand(B, L, heads_q, D)
+        k = _rand(B, L, heads_kv, D)
+        v = _rand(B, L, heads_kv, D)
+        out, lse = na1d(q, k, v, kernel_size=5, is_causal=True, return_lse=True)
+        mx.eval(out, lse)
+        assert out.shape == (B, L, heads_q, D)
+        assert mx.all(mx.isfinite(lse))
+
+    def test_additional_kv_with_gqa_1d(self):
+        _seed()
+        B, L, D = 1, 12, 8
+        heads_q, heads_kv = 4, 2
+        q = _rand(B, L, heads_q, D)
+        k = _rand(B, L, heads_kv, D)
+        v = _rand(B, L, heads_kv, D)
+        ak = _rand(B, 2, heads_kv, D)
+        av = _rand(B, 2, heads_kv, D)
+        out = na1d(q, k, v, kernel_size=5, additional_keys=ak, additional_values=av)
+        mx.eval(out)
+        assert out.shape == (B, L, heads_q, D)
+
+    def test_additional_kv_with_gqa_2d(self):
+        _seed()
+        B, Hh, W, D = 1, 8, 8, 8
+        heads_q, heads_kv = 4, 2
+        q = _rand(B, Hh, W, heads_q, D)
+        k = _rand(B, Hh, W, heads_kv, D)
+        v = _rand(B, Hh, W, heads_kv, D)
+        ak = _rand(B, 2, heads_kv, D)
+        av = _rand(B, 2, heads_kv, D)
+        out = na2d(q, k, v, kernel_size=5, additional_keys=ak, additional_values=av)
+        mx.eval(out)
+        assert out.shape == (B, Hh, W, heads_q, D)
+
+    def test_stride_with_return_lse_1d(self):
+        _seed()
+        B, L, H, D = 1, 12, 2, 8
+        q = _rand(B, L, H, D)
+        k = _rand(B, L, H, D)
+        v = _rand(B, L, H, D)
+        out, lse = na1d(q, k, v, kernel_size=5, stride=2, return_lse=True)
+        mx.eval(out, lse)
+        L_out = (L + 2 - 1) // 2
+        assert out.shape == (B, L_out, H, D)
+        assert lse.shape == (B, L_out, H)
+
+    def test_dilation_with_gqa_1d(self):
+        _seed()
+        B, L, D = 1, 16, 8
+        heads_q, heads_kv = 4, 2
+        q = _rand(B, L, heads_q, D)
+        k = _rand(B, L, heads_kv, D)
+        v = _rand(B, L, heads_kv, D)
+        out = na1d(q, k, v, kernel_size=5, dilation=2)
+        mx.eval(out)
+        assert out.shape == (B, L, heads_q, D)
+
+    def test_merge_with_gqa_1d(self):
+        _seed()
+        B, L, D = 1, 12, 8
+        heads_q, heads_kv = 4, 2
+        q = _rand(B, L, heads_q, D)
+        k1 = _rand(B, L, heads_kv, D)
+        v1 = _rand(B, L, heads_kv, D)
+        k2 = _rand(B, L, heads_kv, D)
+        v2 = _rand(B, L, heads_kv, D)
+        out1, lse1 = na1d(q, k1, v1, kernel_size=5, return_lse=True)
+        out2, lse2 = na1d(q, k2, v2, kernel_size=5, return_lse=True)
+        merged, merged_lse = merge_attentions([out1, out2], [lse1, lse2])
+        mx.eval(merged, merged_lse)
+        assert merged.shape == (B, L, heads_q, D)
+        assert merged_lse.shape == (B, L, heads_q)
+
+
+# ===================================================================
+# 9. FMHA Edge Cases
+# ===================================================================
+
+
+class TestFMHAEdgeCases:
+    """Edge cases for FMHA fast path dispatch."""
+
+    def test_fmha_kernel_equals_spatial_1d(self):
+        _seed()
+        B, L, H, D = 1, 12, 2, 8
+        q = _rand(B, L, H, D)
+        k = _rand(B, L, H, D)
+        v = _rand(B, L, H, D)
+        out = na1d(q, k, v, kernel_size=L)
+        mx.eval(out)
+        assert out.shape == (B, L, H, D)
+
+    def test_fmha_kernel_equals_spatial_2d(self):
+        _seed()
+        B, Hh, W, H, D = 1, 6, 8, 2, 8
+        q = _rand(B, Hh, W, H, D)
+        k = _rand(B, Hh, W, H, D)
+        v = _rand(B, Hh, W, H, D)
+        out = na2d(q, k, v, kernel_size=(Hh, W))
+        mx.eval(out)
+        assert out.shape == (B, Hh, W, H, D)
+
+    def test_fmha_non_square_full_kernel_2d(self):
+        _seed()
+        B, Hh, W, H, D = 1, 4, 8, 2, 8
+        q = _rand(B, Hh, W, H, D)
+        k = _rand(B, Hh, W, H, D)
+        v = _rand(B, Hh, W, H, D)
+        scale = D ** -0.5
+
+        out_na = na2d(q, k, v, kernel_size=(Hh, W), scale=scale)
+
+        # Compare with manual SDPA
+        S = Hh * W
+        q_t = q.reshape(B, S, H, D).transpose(0, 2, 1, 3)
+        k_t = k.reshape(B, S, H, D).transpose(0, 2, 1, 3)
+        v_t = v.reshape(B, S, H, D).transpose(0, 2, 1, 3)
+        out_sdpa = mx.fast.scaled_dot_product_attention(q_t, k_t, v_t, scale=scale)
+        out_sdpa = out_sdpa.transpose(0, 2, 1, 3).reshape(B, Hh, W, H, D)
+        mx.eval(out_na, out_sdpa)
+
+        assert mx.allclose(out_na, out_sdpa, atol=1e-5, rtol=1e-5)
+
+    def test_fmha_with_additional_kv_backward(self):
+        _seed()
+        B, L, H, D = 1, 10, 2, 8
+        q = _rand(B, L, H, D)
+        k = _rand(B, L, H, D)
+        v = _rand(B, L, H, D)
+        ak = _rand(B, 3, H, D)
+        av = _rand(B, 3, H, D)
+
+        def loss_fn(q_in, k_in, v_in, ak_in, av_in):
+            return mx.sum(na1d(q_in, k_in, v_in, kernel_size=L,
+                              additional_keys=ak_in, additional_values=av_in))
+
+        grads = mx.grad(loss_fn, argnums=(0, 1, 2, 3, 4))(q, k, v, ak, av)
+        mx.eval(*grads)
+        assert grads[0].shape == q.shape
+        assert grads[3].shape == ak.shape
+        assert grads[4].shape == av.shape
+
+
+# ===================================================================
+# 10. Metal-specific return_lse
+# ===================================================================
+
+
+class TestMetalReturnLSE:
+    """Metal backend-specific return_lse tests."""
+
+    def test_metal_return_lse_1d(self):
+        import natten_mlx
+        backend = natten_mlx.get_backend()
+        if backend not in ("fast_metal", "nanobind"):
+            pytest.skip("Metal backend not available")
+
+        _seed()
+        q = _rand(1, 12, 2, 8)
+        k = _rand(1, 12, 2, 8)
+        v = _rand(1, 12, 2, 8)
+        out, lse = na1d(q, k, v, kernel_size=5, return_lse=True)
+        mx.eval(out, lse)
+        assert lse.shape == (1, 12, 2)
+        assert mx.all(mx.isfinite(lse))

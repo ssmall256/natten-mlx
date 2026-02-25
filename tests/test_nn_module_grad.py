@@ -256,3 +256,124 @@ def test_na1d_module_rejects_wrong_channels():
     layer = NeighborhoodAttention1D(embed_dim=16, num_heads=4, kernel_size=3)
     with pytest.raises(ValueError, match="channel dim"):
         layer(mx.random.normal((2, 10, 8)))
+
+
+# ---------------------------------------------------------------------------
+# GQA / MQA nn module tests
+# ---------------------------------------------------------------------------
+
+
+def test_na1d_module_gqa_forward_shape():
+    layer = NeighborhoodAttention1D(
+        embed_dim=16, num_heads=4, kernel_size=3, num_kv_heads=2
+    )
+    x = mx.random.normal((1, 10, 16))
+    out = layer(x)
+    assert out.shape == x.shape
+
+
+def test_na1d_module_mqa_forward_shape():
+    layer = NeighborhoodAttention1D(
+        embed_dim=16, num_heads=4, kernel_size=3, num_kv_heads=1
+    )
+    x = mx.random.normal((1, 10, 16))
+    out = layer(x)
+    assert out.shape == x.shape
+
+
+def test_na1d_module_gqa_grad_flows():
+    layer = NeighborhoodAttention1D(
+        embed_dim=16, num_heads=4, kernel_size=3, num_kv_heads=2
+    )
+    x = mx.random.normal((1, 10, 16))
+
+    def loss_fn(x_in):
+        return mx.sum(layer(x_in))
+
+    grad = mx.grad(loss_fn)(x)
+    assert grad.shape == x.shape
+    assert np.isfinite(np.array(grad)).all()
+
+
+def test_na1d_module_gqa_param_grad():
+    layer = NeighborhoodAttention1D(
+        embed_dim=16, num_heads=4, kernel_size=3, num_kv_heads=2
+    )
+    x = mx.random.normal((1, 10, 16))
+
+    def loss_fn(params):
+        layer.update(params)
+        return mx.sum(layer(x))
+
+    grads = mx.grad(loss_fn)(layer.parameters())
+    assert "q_proj" in grads
+    assert "kv_proj" in grads
+    assert np.isfinite(np.array(grads["q_proj"]["weight"])).all()
+
+
+def test_na1d_module_gqa_indivisible_raises():
+    with pytest.raises(ValueError, match="divisible"):
+        NeighborhoodAttention1D(
+            embed_dim=16, num_heads=4, kernel_size=3, num_kv_heads=3
+        )
+
+
+def test_na2d_module_gqa_forward_shape():
+    layer = NeighborhoodAttention2D(
+        embed_dim=12, num_heads=3, kernel_size=(3, 3), num_kv_heads=1
+    )
+    x = mx.random.normal((1, 7, 5, 12))
+    out = layer(x)
+    assert out.shape == x.shape
+
+
+def test_na2d_module_gqa_grad_flows():
+    layer = NeighborhoodAttention2D(
+        embed_dim=12, num_heads=3, kernel_size=(3, 3), num_kv_heads=1
+    )
+    x = mx.random.normal((1, 7, 5, 12))
+
+    def loss_fn(x_in):
+        return mx.sum(layer(x_in))
+
+    grad = mx.grad(loss_fn)(x)
+    assert grad.shape == x.shape
+    assert np.isfinite(np.array(grad)).all()
+
+
+def test_na2d_module_gqa_param_grad():
+    layer = NeighborhoodAttention2D(
+        embed_dim=12, num_heads=3, kernel_size=(3, 3), num_kv_heads=1
+    )
+    x = mx.random.normal((1, 7, 5, 12))
+
+    def loss_fn(params):
+        layer.update(params)
+        return mx.sum(layer(x))
+
+    grads = mx.grad(loss_fn)(layer.parameters())
+    assert "q_proj" in grads
+    assert "kv_proj" in grads
+
+
+def test_na3d_module_gqa_forward_shape():
+    layer = NeighborhoodAttention3D(
+        embed_dim=12, num_heads=3, kernel_size=(3, 3, 3), num_kv_heads=1
+    )
+    x = mx.random.normal((1, 5, 5, 5, 12))
+    out = layer(x)
+    assert out.shape == x.shape
+
+
+def test_na3d_module_gqa_grad_flows():
+    layer = NeighborhoodAttention3D(
+        embed_dim=12, num_heads=3, kernel_size=(3, 3, 3), num_kv_heads=1
+    )
+    x = mx.random.normal((1, 5, 5, 5, 12))
+
+    def loss_fn(x_in):
+        return mx.sum(layer(x_in))
+
+    grad = mx.grad(loss_fn)(x)
+    assert grad.shape == x.shape
+    assert np.isfinite(np.array(grad)).all()

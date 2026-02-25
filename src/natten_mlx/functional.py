@@ -221,7 +221,34 @@ def na1d(
 ) -> Union[mx.array, Tuple[mx.array, mx.array]]:
     """1D neighborhood attention.
 
-    Layout: [batch, seqlen, heads, head_dim].
+    Each query attends to a local window of ``kernel_size`` neighbors along
+    the sequence dimension.  Supports GQA/MQA when K/V have fewer heads
+    than Q, and optional extra global tokens via ``additional_keys``/
+    ``additional_values``.
+
+    Args:
+        query: ``[B, L, H_q, D]``.
+        key: ``[B, L, H_kv, D]``.  ``H_q`` must be divisible by ``H_kv``.
+        value: ``[B, L, H_kv, D]``.
+        kernel_size: Neighborhood window size (scalar or 1-tuple).
+        stride: Output stride for downsampling.  Default ``1``.
+        dilation: Gap between attended positions.  Default ``1``.
+        is_causal: Causal masking (attend only to past/current).
+        scale: Logit scaling factor.  Default ``D ** -0.5``.
+        return_lse: If ``True``, return ``(output, lse)`` where ``lse``
+            has shape ``[B, L_out, H_q]``.
+        additional_keys: ``[B, N_extra, H_kv, D]`` — extra tokens every
+            query attends to (global attention).  Requires
+            ``additional_values``.
+        additional_values: ``[B, N_extra, H_kv, D]``.
+
+    Returns:
+        ``[B, L_out, H_q, D]``, or ``(output, lse)`` when
+        ``return_lse=True``.
+
+    Note:
+        When ``kernel_size >= L`` the call is dispatched to
+        ``mx.fast.scaled_dot_product_attention`` automatically.
     """
     kv_repeat = _validate_qkv(query, key, value, 1)
     add_k, add_v = _validate_additional_kv(query, additional_keys, additional_values, kv_repeat)
@@ -285,7 +312,33 @@ def na2d(
 ) -> Union[mx.array, Tuple[mx.array, mx.array]]:
     """2D neighborhood attention.
 
-    Layout: [batch, height, width, heads, head_dim].
+    Each query attends to a local ``kernel_size × kernel_size`` window on the
+    spatial grid.  Supports GQA/MQA when K/V have fewer heads than Q, and
+    optional extra global tokens via ``additional_keys``/``additional_values``.
+
+    Args:
+        query: ``[B, H, W, H_q, D]``.
+        key: ``[B, H, W, H_kv, D]``.  ``H_q`` must be divisible by ``H_kv``.
+        value: ``[B, H, W, H_kv, D]``.
+        kernel_size: Neighborhood window size (scalar or ``(kH, kW)``).
+        stride: Output stride for downsampling.  Default ``1``.
+        dilation: Gap between attended positions.  Default ``1``.
+        is_causal: Causal masking per axis, e.g. ``(False, True)``.
+        scale: Logit scaling factor.  Default ``D ** -0.5``.
+        return_lse: If ``True``, return ``(output, lse)`` where ``lse``
+            has shape ``[B, H_out, W_out, H_q]``.
+        additional_keys: ``[B, N_extra, H_kv, D]`` — extra tokens every
+            query attends to (global attention).  Requires
+            ``additional_values``.
+        additional_values: ``[B, N_extra, H_kv, D]``.
+
+    Returns:
+        ``[B, H_out, W_out, H_q, D]``, or ``(output, lse)`` when
+        ``return_lse=True``.
+
+    Note:
+        When ``kernel_size >= (H, W)`` the call is dispatched to
+        ``mx.fast.scaled_dot_product_attention`` automatically.
     """
     kv_repeat = _validate_qkv(query, key, value, 2)
     add_k, add_v = _validate_additional_kv(query, additional_keys, additional_values, kv_repeat)
@@ -349,7 +402,34 @@ def na3d(
 ) -> Union[mx.array, Tuple[mx.array, mx.array]]:
     """3D neighborhood attention.
 
-    Layout: [batch, depth, height, width, heads, head_dim].
+    Each query attends to a local ``kernel_size³`` window in the volumetric
+    spatial grid.  Supports GQA/MQA when K/V have fewer heads than Q, and
+    optional extra global tokens via ``additional_keys``/``additional_values``.
+
+    Args:
+        query: ``[B, D1, D2, D3, H_q, D]``.
+        key: ``[B, D1, D2, D3, H_kv, D]``.  ``H_q`` must be divisible by
+            ``H_kv``.
+        value: ``[B, D1, D2, D3, H_kv, D]``.
+        kernel_size: Neighborhood window size (scalar or ``(k1, k2, k3)``).
+        stride: Output stride for downsampling.  Default ``1``.
+        dilation: Gap between attended positions.  Default ``1``.
+        is_causal: Causal masking per axis.
+        scale: Logit scaling factor.  Default ``D ** -0.5``.
+        return_lse: If ``True``, return ``(output, lse)`` where ``lse``
+            has shape ``[B, D1_out, D2_out, D3_out, H_q]``.
+        additional_keys: ``[B, N_extra, H_kv, D]`` — extra tokens every
+            query attends to (global attention).  Requires
+            ``additional_values``.
+        additional_values: ``[B, N_extra, H_kv, D]``.
+
+    Returns:
+        ``[B, D1_out, D2_out, D3_out, H_q, D]``, or ``(output, lse)``
+        when ``return_lse=True``.
+
+    Note:
+        When ``kernel_size >= (D1, D2, D3)`` the call is dispatched to
+        ``mx.fast.scaled_dot_product_attention`` automatically.
     """
     kv_repeat = _validate_qkv(query, key, value, 3)
     add_k, add_v = _validate_additional_kv(query, additional_keys, additional_values, kv_repeat)
