@@ -2,56 +2,21 @@
 
 Neighborhood attention ([NATTEN](https://github.com/SHI-Labs/NATTEN)) for Apple Silicon, built on [MLX](https://github.com/ml-explore/mlx).
 
-## Features
+## Why this exists
 
-- **1D, 2D, and 3D** neighborhood attention ops with full dilation, stride, and causal support.
-- **Variable-length (varlen)** attention — padded batches with per-sample spatial sizes, Metal-accelerated for all ranks.
-- **`nn.Module` wrappers**: `NeighborhoodAttention1D`, `2D`, `3D` — drop-in attention layers.
-- **Three backend tiers** with automatic dispatch:
-  - **Pure MLX** — full coverage baseline, no compilation needed.
-  - **Fast Metal** — hand-tuned Metal kernels for forward and backward.
-  - **Nanobind** — compiled C++/Metal primitives via `mx::Primitive` for maximum performance.
-- **float32, float16, and bfloat16** support.
-- **GQA / MQA** — grouped-query and multi-query attention via `num_kv_heads` (nn modules) or mismatched Q/KV head counts (functional API).
-- **`return_lse`** — return log-sum-exp alongside output for gradient checkpointing and attention merging.
-- **`additional_keys` / `additional_values`** — prepend extra global tokens that every query attends to.
-- **`merge_attentions`** — numerically stable sigmoid-based merge of multiple attention outputs.
-- **FMHA fast path** — auto-dispatches to `mx.fast.scaled_dot_product_attention` when kernel covers the full spatial extent.
-- **Extras** — model-specific fused Metal kernels (e.g., `extras.allin1` for DiNAT with fused QK+RPB).
-- **Compat shims** for historical NATTEN API versions (`v014`, `v015`, `v017`, `v020`).
+Upstream NATTEN provides CUDA kernels but dropped macOS support after v0.14. If you work in the MLX ecosystem on Apple Silicon — for training, fine-tuning, or inference — there was no GPU-accelerated neighborhood attention.
 
-### New features usage
+`natten-mlx` fills that gap with hand-tuned Metal kernels and compiled nanobind primitives for MLX, covering 1D, 2D, and 3D neighborhood attention with full backward pass support. For PyTorch MPS workflows, see the sibling project [natten-mps](https://github.com/ssmall256/natten-mps).
 
-```python
-import mlx.core as mx
-from natten_mlx import na1d, merge_attentions
-
-# GQA: 8 query heads, 2 KV heads
-q = mx.random.normal((1, 128, 8, 32))
-k = mx.random.normal((1, 128, 2, 32))
-v = mx.random.normal((1, 128, 2, 32))
-out = na1d(q, k, v, kernel_size=7)
-
-# return_lse for merging
-out1, lse1 = na1d(q, k, v, kernel_size=7, return_lse=True)
-out2, lse2 = na1d(q, k, v, kernel_size=7, return_lse=True)
-merged, merged_lse = merge_attentions([out1, out2], [lse1, lse2])
-
-# Additional global tokens
-add_k = mx.random.normal((1, 4, 2, 32))
-add_v = mx.random.normal((1, 4, 2, 32))
-out = na1d(q, k, v, kernel_size=7, additional_keys=add_k, additional_values=add_v)
-
-# GQA via nn module
-from natten_mlx import NeighborhoodAttention1D
-layer = NeighborhoodAttention1D(embed_dim=256, num_heads=8, kernel_size=7, num_kv_heads=2)
-```
+[Installation](#installation) | [Quick Start](#quick-start) | [Features](#features) | [Backends](#backends) | [Performance](#performance) | [Limitations](#limitations) | [Acknowledgments](#acknowledgments) | [License](#license)
 
 ## Installation
 
 ```bash
 pip install natten-mlx
 ```
+
+Requires Python 3.10+ and MLX >= 0.30.3 (Apple Silicon / macOS only).
 
 To build the optional nanobind extension (for Tier 2 performance):
 
@@ -129,6 +94,51 @@ k2d = mx.random.normal((2, 32, 32, 4, 32))
 v2d = mx.random.normal((2, 32, 32, 4, 32))
 spatial_sizes = mx.array([[32, 32], [24, 20]])
 out2d = na2d_varlen(q2d, k2d, v2d, kernel_size=7, spatial_sizes=spatial_sizes)
+```
+
+## Features
+
+- **1D, 2D, and 3D** neighborhood attention ops with full dilation, stride, and causal support.
+- **Variable-length (varlen)** attention — padded batches with per-sample spatial sizes, Metal-accelerated for all ranks.
+- **`nn.Module` wrappers**: `NeighborhoodAttention1D`, `2D`, `3D` — drop-in attention layers.
+- **Three backend tiers** with automatic dispatch:
+  - **Pure MLX** — full coverage baseline, no compilation needed.
+  - **Fast Metal** — hand-tuned Metal kernels for forward and backward.
+  - **Nanobind** — compiled C++/Metal primitives via `mx::Primitive` for maximum performance.
+- **float32, float16, and bfloat16** support.
+- **GQA / MQA** — grouped-query and multi-query attention via `num_kv_heads` (nn modules) or mismatched Q/KV head counts (functional API).
+- **`return_lse`** — return log-sum-exp alongside output for gradient checkpointing and attention merging.
+- **`additional_keys` / `additional_values`** — prepend extra global tokens that every query attends to.
+- **`merge_attentions`** — numerically stable sigmoid-based merge of multiple attention outputs.
+- **FMHA fast path** — auto-dispatches to `mx.fast.scaled_dot_product_attention` when kernel covers the full spatial extent.
+- **Extras** — model-specific fused Metal kernels (e.g., `extras.allin1` for DiNAT with fused QK+RPB).
+- **Compat shims** for historical NATTEN API versions (`v014`, `v015`, `v017`, `v020`).
+
+### New features usage
+
+```python
+import mlx.core as mx
+from natten_mlx import na1d, merge_attentions
+
+# GQA: 8 query heads, 2 KV heads
+q = mx.random.normal((1, 128, 8, 32))
+k = mx.random.normal((1, 128, 2, 32))
+v = mx.random.normal((1, 128, 2, 32))
+out = na1d(q, k, v, kernel_size=7)
+
+# return_lse for merging
+out1, lse1 = na1d(q, k, v, kernel_size=7, return_lse=True)
+out2, lse2 = na1d(q, k, v, kernel_size=7, return_lse=True)
+merged, merged_lse = merge_attentions([out1, out2], [lse1, lse2])
+
+# Additional global tokens
+add_k = mx.random.normal((1, 4, 2, 32))
+add_v = mx.random.normal((1, 4, 2, 32))
+out = na1d(q, k, v, kernel_size=7, additional_keys=add_k, additional_values=add_v)
+
+# GQA via nn module
+from natten_mlx import NeighborhoodAttention1D
+layer = NeighborhoodAttention1D(embed_dim=256, num_heads=8, kernel_size=7, num_kv_heads=2)
 ```
 
 ## Extras: Model-Specific Fused Kernels
