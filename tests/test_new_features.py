@@ -1148,7 +1148,124 @@ class TestFMHAEdgeCases:
 
 
 # ===================================================================
-# 10. Metal-specific return_lse
+# 10. 3D Feature Backward Coverage
+# ===================================================================
+
+
+class Test3DFeatureBackward:
+    """3D backward tests for features that had only 1D/2D coverage."""
+
+    def test_na3d_gqa_backward(self):
+        _seed()
+        B, Ds, Hs, Ws, D = 1, 4, 4, 4, 8
+        heads_q, heads_kv = 4, 2
+        q = _rand(B, Ds, Hs, Ws, heads_q, D)
+        k = _rand(B, Ds, Hs, Ws, heads_kv, D)
+        v = _rand(B, Ds, Hs, Ws, heads_kv, D)
+
+        def loss_fn(q_in, k_in, v_in):
+            return mx.sum(na3d(q_in, k_in, v_in, kernel_size=3))
+
+        grads = mx.grad(loss_fn, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*grads)
+        assert grads[0].shape == (B, Ds, Hs, Ws, heads_q, D)
+        assert grads[1].shape == (B, Ds, Hs, Ws, heads_kv, D)
+        assert grads[2].shape == (B, Ds, Hs, Ws, heads_kv, D)
+
+    def test_na3d_return_lse_backward(self):
+        _seed()
+        B, Ds, Hs, Ws, H, D = 1, 4, 4, 4, 2, 8
+        q = _rand(B, Ds, Hs, Ws, H, D)
+        k = _rand(B, Ds, Hs, Ws, H, D)
+        v = _rand(B, Ds, Hs, Ws, H, D)
+
+        def loss_fn(q_in, k_in, v_in):
+            out, lse = na3d(q_in, k_in, v_in, kernel_size=3, return_lse=True)
+            return mx.sum(out) + mx.sum(lse)
+
+        grads = mx.grad(loss_fn, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*grads)
+        assert grads[0].shape == q.shape
+        assert grads[1].shape == k.shape
+        assert grads[2].shape == v.shape
+
+    def test_na3d_fmha_backward(self):
+        _seed()
+        B, Ds, Hs, Ws, H, D = 1, 4, 4, 4, 2, 8
+        q = _rand(B, Ds, Hs, Ws, H, D)
+        k = _rand(B, Ds, Hs, Ws, H, D)
+        v = _rand(B, Ds, Hs, Ws, H, D)
+
+        def loss_fn(q_in, k_in, v_in):
+            return mx.sum(na3d(q_in, k_in, v_in, kernel_size=(Ds, Hs, Ws)))
+
+        grads = mx.grad(loss_fn, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*grads)
+        assert grads[0].shape == q.shape
+        assert grads[1].shape == k.shape
+
+    def test_merge_2way_backward_3d(self):
+        _seed()
+        B, Ds, Hs, Ws, H, D = 1, 4, 4, 4, 2, 8
+        ks = 3
+        q = _rand(B, Ds, Hs, Ws, H, D)
+        k1 = _rand(B, Ds, Hs, Ws, H, D)
+        v1 = _rand(B, Ds, Hs, Ws, H, D)
+        k2 = _rand(B, Ds, Hs, Ws, H, D)
+        v2 = _rand(B, Ds, Hs, Ws, H, D)
+
+        def loss_fn(q_in, k1_in, v1_in, k2_in, v2_in):
+            out1, lse1 = na3d(q_in, k1_in, v1_in, kernel_size=ks, return_lse=True)
+            out2, lse2 = na3d(q_in, k2_in, v2_in, kernel_size=ks, return_lse=True)
+            merged, merged_lse = merge_attentions([out1, out2], [lse1, lse2])
+            return mx.sum(merged) + mx.sum(merged_lse)
+
+        grads = mx.grad(loss_fn, argnums=(0, 1, 2, 3, 4))(q, k1, v1, k2, v2)
+        mx.eval(*grads)
+        assert grads[0].shape == q.shape
+        assert grads[1].shape == k1.shape
+        assert grads[4].shape == v2.shape
+
+    def test_gqa_with_return_lse_3d(self):
+        _seed()
+        B, Ds, Hs, Ws, D = 1, 4, 4, 4, 8
+        heads_q, heads_kv = 4, 2
+        q = _rand(B, Ds, Hs, Ws, heads_q, D)
+        k = _rand(B, Ds, Hs, Ws, heads_kv, D)
+        v = _rand(B, Ds, Hs, Ws, heads_kv, D)
+
+        def loss_fn(q_in, k_in, v_in):
+            out, lse = na3d(q_in, k_in, v_in, kernel_size=3, return_lse=True)
+            return mx.sum(out) + mx.sum(lse)
+
+        grads = mx.grad(loss_fn, argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*grads)
+        assert grads[0].shape == (B, Ds, Hs, Ws, heads_q, D)
+        assert grads[1].shape == (B, Ds, Hs, Ws, heads_kv, D)
+
+    def test_additional_kv_with_gqa_3d(self):
+        _seed()
+        B, Ds, Hs, Ws, D = 1, 4, 4, 4, 8
+        heads_q, heads_kv = 4, 2
+        q = _rand(B, Ds, Hs, Ws, heads_q, D)
+        k = _rand(B, Ds, Hs, Ws, heads_kv, D)
+        v = _rand(B, Ds, Hs, Ws, heads_kv, D)
+        ak = _rand(B, 2, heads_kv, D)
+        av = _rand(B, 2, heads_kv, D)
+
+        def loss_fn(q_in, k_in, v_in, ak_in, av_in):
+            return mx.sum(na3d(q_in, k_in, v_in, kernel_size=3,
+                              additional_keys=ak_in, additional_values=av_in))
+
+        grads = mx.grad(loss_fn, argnums=(0, 1, 2, 3, 4))(q, k, v, ak, av)
+        mx.eval(*grads)
+        assert grads[0].shape == q.shape
+        assert grads[3].shape == ak.shape
+        assert grads[4].shape == av.shape
+
+
+# ===================================================================
+# 11. Metal-specific return_lse
 # ===================================================================
 
 
