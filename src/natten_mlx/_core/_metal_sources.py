@@ -3740,3 +3740,1342 @@ if (plane < depth && y < height && x < width) {{
     }}
 }}
 """
+
+
+# ===========================================================================
+# Fused SIMD cooperative kernel sources
+# ===========================================================================
+#
+# 32 threads (1 simdgroup) per query position.
+# Each lane handles dims: lane, lane+32, lane+64, ...
+# simd_sum for dot product reduction, online softmax.
+# Outputs both out[B,H,L_out,D] and lse[B,H,L_out].
+# ===========================================================================
+
+
+_FUSED_SIMD_HELPERS = r"""
+// Causal window start: index - (kernel_size-1)*dilation (can be negative)
+#define FUSED_GET_CAUSAL_WINDOW_START(OUT, IDX, K, DIL) do { \
+    (OUT) = (IDX) - ((K) - 1) * (DIL);                      \
+} while(0)
+
+// Non-causal window start (same as NATTEN_GET_WINDOW_START but using the
+// natten-mps inline function logic directly, written as a macro).
+#define FUSED_GET_WINDOW_START(OUT, IDX, LEN, K, NH, DIL) do {               \
+    int _idx = (IDX);                                                         \
+    int _len = (LEN);                                                         \
+    int _K = (K);                                                             \
+    int _nh = (NH);                                                           \
+    int _d = (DIL);                                                           \
+    if (_d <= 1) {                                                            \
+        int _start = max(_idx - _nh, 0);                                      \
+        if (_idx + _nh >= _len) {                                             \
+            _start += (_len - _idx - _nh - 1);                                \
+        }                                                                     \
+        (OUT) = _start;                                                       \
+    } else {                                                                  \
+        int _ni = _idx - _nh * _d;                                            \
+        if (_ni < 0) {                                                        \
+            (OUT) = _idx % _d;                                                \
+        } else if (_idx + _nh * _d >= _len) {                                 \
+            int _imodd = _idx % _d;                                           \
+            int _a = (_len / _d) * _d;                                        \
+            int _b = _len - _a;                                               \
+            if (_imodd < _b) {                                                \
+                (OUT) = _len - _b + _imodd - 2 * _nh * _d;                   \
+            } else {                                                          \
+                (OUT) = _a + _imodd - _K * _d;                               \
+            }                                                                 \
+        } else {                                                              \
+            (OUT) = _ni;                                                      \
+        }                                                                     \
+    }                                                                         \
+} while(0)
+
+#define FUSED_MAX_DPL 4
+"""
+
+
+def source_1d_fused_simd(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    return _FUSED_SIMD_HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+uint lane = thread_index_in_simdgroup;
+
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int length = query_shape[2];
+const int dim = query_shape[3];
+const int stride = (int)stride_param[0];
+const int dilation = (int)dilation_param[0];
+const bool causal = ((int)causal_param[0]) != 0;
+const float scale = scale_param[0];
+const int K = {kernel_size};
+const int NH = {nh};
+const int out_length = (length + stride - 1) / stride;
+const int dims_per_lane = (dim + 31) / 32;
+
+int oi = gid.x / 32;
+int h  = gid.z % heads;
+int b  = gid.z / heads;
+if (b >= batch_size || h >= heads || oi >= out_length) return;
+
+int i = oi * stride;
+
+int ni;
+if (causal) {{
+    FUSED_GET_CAUSAL_WINDOW_START(ni, i, K, dilation);
+}} else {{
+    FUSED_GET_WINDOW_START(ni, i, length, K, NH, dilation);
+}}
+
+int q_base = ((b * heads + h) * length + i) * dim;
+float q_reg[FUSED_MAX_DPL];
+for (int dl = 0; dl < dims_per_lane; dl++) {{
+    int d = lane + dl * 32;
+    q_reg[dl] = (d < dim) ? (float)query[q_base + d] : 0.0f;
+}}
+
+float o_acc[FUSED_MAX_DPL];
+for (int dl = 0; dl < dims_per_lane; dl++) o_acc[dl] = 0.0f;
+float row_max = -INFINITY;
+float row_sum = 0.0f;
+
+for (int ki = 0; ki < K; ki++) {{
+    int key_i = ki * dilation + ni;
+    bool valid = causal
+        ? (key_i >= 0 && key_i < length && key_i <= i)
+        : (key_i >= 0 && key_i < length);
+
+    float partial_dot = 0.0f;
+    int k_base = ((b * heads + h) * length + key_i) * dim;
+    if (valid) {{
+        for (int dl = 0; dl < dims_per_lane; dl++) {{
+            int d = lane + dl * 32;
+            if (d < dim)
+                partial_dot += q_reg[dl] * (float)key[k_base + d];
+        }}
+    }}
+    float score = valid ? simd_sum(partial_dot) * scale : -INFINITY;
+
+    float new_max = max(row_max, score);
+    if (new_max != -INFINITY) {{
+        float correction = (row_max == -INFINITY) ? 0.0f : exp(row_max - new_max);
+        row_sum = row_sum * correction;
+        for (int dl = 0; dl < dims_per_lane; dl++)
+            o_acc[dl] *= correction;
+    }}
+    row_max = new_max;
+    float exp_score = (score == -INFINITY) ? 0.0f : exp(score - row_max);
+    row_sum += exp_score;
+
+    if (valid) {{
+        int v_base = ((b * heads + h) * length + key_i) * dim;
+        for (int dl = 0; dl < dims_per_lane; dl++) {{
+            int d = lane + dl * 32;
+            if (d < dim)
+                o_acc[dl] += exp_score * (float)value[v_base + d];
+        }}
+    }}
+}}
+
+float inv_sum = (row_sum > 0.0f) ? (1.0f / row_sum) : 0.0f;
+int o_base = ((b * heads + h) * out_length + oi) * dim;
+for (int dl = 0; dl < dims_per_lane; dl++) {{
+    int d = lane + dl * 32;
+    if (d < dim)
+        out[o_base + d] = o_acc[dl] * inv_sum;
+}}
+
+if (lane == 0) {{
+    int lse_idx = (b * heads + h) * out_length + oi;
+    lse[lse_idx] = (row_sum > 0.0f) ? (log(row_sum) + row_max) : -INFINITY;
+}}
+"""
+
+
+def source_2d_fused_simd(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    return _FUSED_SIMD_HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+uint lane = thread_index_in_simdgroup;
+
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int height = query_shape[2];
+const int width = query_shape[3];
+const int dim = query_shape[4];
+const int stride_h = (int)stride_param[0];
+const int stride_w = (int)stride_param[1];
+const int dilation_h = (int)dilation_param[0];
+const int dilation_w = (int)dilation_param[1];
+const int causal_h = (int)causal_param[0];
+const int causal_w = (int)causal_param[1];
+const float scale = scale_param[0];
+const int Kh = {kernel_size};
+const int Kw = {kernel_size};
+const int NH = {nh};
+const int h_out = (height + stride_h - 1) / stride_h;
+const int w_out = (width + stride_w - 1) / stride_w;
+const int dims_per_lane = (dim + 31) / 32;
+
+int oj = gid.x / 32;
+int oi = gid.y;
+int bh = gid.z;
+int b  = bh / heads;
+int h  = bh % heads;
+if (b >= batch_size || oi >= h_out || oj >= w_out) return;
+
+int i = oi * stride_h;
+int j = oj * stride_w;
+
+int ni;
+if (causal_h) {{
+    FUSED_GET_CAUSAL_WINDOW_START(ni, i, Kh, dilation_h);
+}} else {{
+    FUSED_GET_WINDOW_START(ni, i, height, Kh, NH, dilation_h);
+}}
+int nj;
+if (causal_w) {{
+    FUSED_GET_CAUSAL_WINDOW_START(nj, j, Kw, dilation_w);
+}} else {{
+    FUSED_GET_WINDOW_START(nj, j, width, Kw, NH, dilation_w);
+}}
+
+int q_base = (((b * heads + h) * height + i) * width + j) * dim;
+float q_reg[FUSED_MAX_DPL];
+for (int dl = 0; dl < dims_per_lane; dl++) {{
+    int d = lane + dl * 32;
+    q_reg[dl] = (d < dim) ? (float)query[q_base + d] : 0.0f;
+}}
+
+float o_acc[FUSED_MAX_DPL];
+for (int dl = 0; dl < dims_per_lane; dl++) o_acc[dl] = 0.0f;
+float row_max = -INFINITY;
+float row_sum = 0.0f;
+
+for (int ki = 0; ki < Kh; ki++) {{
+    int key_i = ki * dilation_h + ni;
+    bool valid_i = (key_i >= 0 && key_i < height);
+    if (causal_h) valid_i = valid_i && (key_i <= i);
+
+    for (int kj = 0; kj < Kw; kj++) {{
+        int key_j = kj * dilation_w + nj;
+        bool valid = valid_i && (key_j >= 0 && key_j < width);
+        if (causal_w) valid = valid && (key_j <= j);
+
+        float partial_dot = 0.0f;
+        int k_base = (((b * heads + h) * height + key_i) * width + key_j) * dim;
+        if (valid) {{
+            for (int dl = 0; dl < dims_per_lane; dl++) {{
+                int d = lane + dl * 32;
+                if (d < dim)
+                    partial_dot += q_reg[dl] * (float)key[k_base + d];
+            }}
+        }}
+        float score = valid ? simd_sum(partial_dot) * scale : -INFINITY;
+
+        float new_max = max(row_max, score);
+        if (new_max != -INFINITY) {{
+            float correction = (row_max == -INFINITY) ? 0.0f : exp(row_max - new_max);
+            row_sum = row_sum * correction;
+            for (int dl = 0; dl < dims_per_lane; dl++)
+                o_acc[dl] *= correction;
+        }}
+        row_max = new_max;
+        float exp_score = (score == -INFINITY) ? 0.0f : exp(score - row_max);
+        row_sum += exp_score;
+
+        if (valid) {{
+            int v_base = (((b * heads + h) * height + key_i) * width + key_j) * dim;
+            for (int dl = 0; dl < dims_per_lane; dl++) {{
+                int d = lane + dl * 32;
+                if (d < dim)
+                    o_acc[dl] += exp_score * (float)value[v_base + d];
+            }}
+        }}
+    }}
+}}
+
+float inv_sum = (row_sum > 0.0f) ? (1.0f / row_sum) : 0.0f;
+int o_base = (((b * heads + h) * h_out + oi) * w_out + oj) * dim;
+for (int dl = 0; dl < dims_per_lane; dl++) {{
+    int d = lane + dl * 32;
+    if (d < dim)
+        out[o_base + d] = o_acc[dl] * inv_sum;
+}}
+
+if (lane == 0) {{
+    int lse_idx = ((b * heads + h) * h_out + oi) * w_out + oj;
+    lse[lse_idx] = (row_sum > 0.0f) ? (log(row_sum) + row_max) : -INFINITY;
+}}
+"""
+
+
+def source_3d_fused_simd(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    return _FUSED_SIMD_HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+uint lane = thread_index_in_simdgroup;
+
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int depth = query_shape[2];
+const int height = query_shape[3];
+const int width = query_shape[4];
+const int dim = query_shape[5];
+const int stride_d = (int)stride_param[0];
+const int stride_h = (int)stride_param[1];
+const int stride_w = (int)stride_param[2];
+const int dilation_d = (int)dilation_param[0];
+const int dilation_h = (int)dilation_param[1];
+const int dilation_w = (int)dilation_param[2];
+const int causal_d = (int)causal_param[0];
+const int causal_h = (int)causal_param[1];
+const int causal_w = (int)causal_param[2];
+const float scale = scale_param[0];
+const int Kd = {kernel_size};
+const int Kh = {kernel_size};
+const int Kw = {kernel_size};
+const int NH = {nh};
+const int dp_out = (depth + stride_d - 1) / stride_d;
+const int h_out = (height + stride_h - 1) / stride_h;
+const int w_out = (width + stride_w - 1) / stride_w;
+const int dims_per_lane = (dim + 31) / 32;
+
+int oj  = gid.x / 32;
+int oi  = gid.y;
+int bhd = gid.z;
+int b   = bhd / (heads * dp_out);
+int rem = bhd % (heads * dp_out);
+int h   = rem / dp_out;
+int od  = rem % dp_out;
+if (b >= batch_size || oi >= h_out || oj >= w_out) return;
+
+int dp = od * stride_d;
+int i  = oi * stride_h;
+int j  = oj * stride_w;
+
+int nd;
+if (causal_d) {{
+    FUSED_GET_CAUSAL_WINDOW_START(nd, dp, Kd, dilation_d);
+}} else {{
+    FUSED_GET_WINDOW_START(nd, dp, depth, Kd, NH, dilation_d);
+}}
+int ni;
+if (causal_h) {{
+    FUSED_GET_CAUSAL_WINDOW_START(ni, i, Kh, dilation_h);
+}} else {{
+    FUSED_GET_WINDOW_START(ni, i, height, Kh, NH, dilation_h);
+}}
+int nj;
+if (causal_w) {{
+    FUSED_GET_CAUSAL_WINDOW_START(nj, j, Kw, dilation_w);
+}} else {{
+    FUSED_GET_WINDOW_START(nj, j, width, Kw, NH, dilation_w);
+}}
+
+int q_base = ((((b*heads+h)*depth+dp)*height+i)*width+j)*dim;
+float q_reg[FUSED_MAX_DPL];
+for (int dl = 0; dl < dims_per_lane; dl++) {{
+    int d = lane + dl * 32;
+    q_reg[dl] = (d < dim) ? (float)query[q_base + d] : 0.0f;
+}}
+
+float o_acc[FUSED_MAX_DPL];
+for (int dl = 0; dl < dims_per_lane; dl++) o_acc[dl] = 0.0f;
+float row_max = -INFINITY;
+float row_sum = 0.0f;
+
+for (int kd = 0; kd < Kd; kd++) {{
+    int key_d = kd * dilation_d + nd;
+    bool valid_d = (key_d >= 0 && key_d < depth);
+    if (causal_d) valid_d = valid_d && (key_d <= dp);
+
+    for (int ki = 0; ki < Kh; ki++) {{
+        int key_i = ki * dilation_h + ni;
+        bool valid_i = valid_d && (key_i >= 0 && key_i < height);
+        if (causal_h) valid_i = valid_i && (key_i <= i);
+
+        for (int kj = 0; kj < Kw; kj++) {{
+            int key_j = kj * dilation_w + nj;
+            bool valid = valid_i && (key_j >= 0 && key_j < width);
+            if (causal_w) valid = valid && (key_j <= j);
+
+            float partial_dot = 0.0f;
+            int k_base = ((((b*heads+h)*depth+key_d)*height+key_i)*width+key_j)*dim;
+            if (valid) {{
+                for (int dl = 0; dl < dims_per_lane; dl++) {{
+                    int d = lane + dl * 32;
+                    if (d < dim)
+                        partial_dot += q_reg[dl] * (float)key[k_base + d];
+                }}
+            }}
+            float score = valid ? simd_sum(partial_dot) * scale : -INFINITY;
+
+            float new_max = max(row_max, score);
+            if (new_max != -INFINITY) {{
+                float correction = (row_max == -INFINITY) ? 0.0f : exp(row_max - new_max);
+                row_sum = row_sum * correction;
+                for (int dl = 0; dl < dims_per_lane; dl++)
+                    o_acc[dl] *= correction;
+            }}
+            row_max = new_max;
+            float exp_score = (score == -INFINITY) ? 0.0f : exp(score - row_max);
+            row_sum += exp_score;
+
+            if (valid) {{
+                int v_base = ((((b*heads+h)*depth+key_d)*height+key_i)*width+key_j)*dim;
+                for (int dl = 0; dl < dims_per_lane; dl++) {{
+                    int d = lane + dl * 32;
+                    if (d < dim)
+                        o_acc[dl] += exp_score * (float)value[v_base + d];
+                }}
+            }}
+        }}
+    }}
+}}
+
+float inv_sum = (row_sum > 0.0f) ? (1.0f / row_sum) : 0.0f;
+int o_base = ((((b*heads+h)*dp_out+od)*h_out+oi)*w_out+oj)*dim;
+for (int dl = 0; dl < dims_per_lane; dl++) {{
+    int d = lane + dl * 32;
+    if (d < dim)
+        out[o_base + d] = o_acc[dl] * inv_sum;
+}}
+
+if (lane == 0) {{
+    int lse_idx = (((b*heads+h)*dp_out+od)*h_out+oi)*w_out+oj;
+    lse[lse_idx] = (row_sum > 0.0f) ? (log(row_sum) + row_max) : -INFINITY;
+}}
+"""
+
+
+def source_1d_fused_simd_backward(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    return _FUSED_SIMD_HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+uint lane = thread_index_in_simdgroup;
+
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int length = query_shape[2];
+const int dim = query_shape[3];
+const int stride = (int)stride_param[0];
+const int dilation = (int)dilation_param[0];
+const bool causal = ((int)causal_param[0]) != 0;
+const float scale = scale_param[0];
+const int K = {kernel_size};
+const int NH = {nh};
+const int out_length = (length + stride - 1) / stride;
+const int dims_per_lane = (dim + 31) / 32;
+
+int oi = gid.x / 32;
+int h  = gid.z % heads;
+int b  = gid.z / heads;
+if (b >= batch_size || h >= heads || oi >= out_length) return;
+
+int i = oi * stride;
+
+int ni;
+if (causal) {{
+    FUSED_GET_CAUSAL_WINDOW_START(ni, i, K, dilation);
+}} else {{
+    FUSED_GET_WINDOW_START(ni, i, length, K, NH, dilation);
+}}
+
+int q_base = ((b * heads + h) * length + i) * dim;
+float q_reg[FUSED_MAX_DPL];
+for (int dl = 0; dl < dims_per_lane; dl++) {{
+    int d = lane + dl * 32;
+    q_reg[dl] = (d < dim) ? (float)query[q_base + d] : 0.0f;
+}}
+
+int go_base = ((b * heads + h) * out_length + oi) * dim;
+float go_reg[FUSED_MAX_DPL];
+for (int dl = 0; dl < dims_per_lane; dl++) {{
+    int d = lane + dl * 32;
+    go_reg[dl] = (d < dim) ? (float)grad_out[go_base + d] : 0.0f;
+}}
+
+// D_i = dot(fwd_output, grad_output)
+float partial_ogo = 0.0f;
+for (int dl = 0; dl < dims_per_lane; dl++) {{
+    int d = lane + dl * 32;
+    if (d < dim)
+        partial_ogo += (float)fwd_out[go_base + d] * go_reg[dl];
+}}
+float D_i = simd_sum(partial_ogo);
+
+// Pass 1: Online softmax to compute LSE
+float row_max = -INFINITY;
+float row_sum = 0.0f;
+for (int ki = 0; ki < K; ki++) {{
+    int key_i = ki * dilation + ni;
+    bool valid = causal
+        ? (key_i >= 0 && key_i < length && key_i <= i)
+        : (key_i >= 0 && key_i < length);
+
+    float partial_dot = 0.0f;
+    int k_base = ((b * heads + h) * length + key_i) * dim;
+    if (valid) {{
+        for (int dl = 0; dl < dims_per_lane; dl++) {{
+            int d = lane + dl * 32;
+            if (d < dim)
+                partial_dot += q_reg[dl] * (float)key[k_base + d];
+        }}
+    }}
+    float score = valid ? simd_sum(partial_dot) * scale : -INFINITY;
+
+    float new_max = max(row_max, score);
+    if (new_max != -INFINITY) {{
+        float correction = (row_max == -INFINITY) ? 0.0f : exp(row_max - new_max);
+        row_sum *= correction;
+    }}
+    row_max = new_max;
+    float exp_score = (score == -INFINITY) ? 0.0f : exp(score - row_max);
+    row_sum += exp_score;
+}}
+
+float my_lse = (row_sum > 0.0f) ? (log(row_sum) + row_max) : -INFINITY;
+
+// Pass 2: Compute d_score, d_q, write attn/d_logits
+float dq_acc[FUSED_MAX_DPL];
+for (int dl = 0; dl < dims_per_lane; dl++) dq_acc[dl] = 0.0f;
+
+for (int ki = 0; ki < K; ki++) {{
+    int key_i = ki * dilation + ni;
+    bool valid = causal
+        ? (key_i >= 0 && key_i < length && key_i <= i)
+        : (key_i >= 0 && key_i < length);
+
+    float partial_dot = 0.0f;
+    int k_base = ((b * heads + h) * length + key_i) * dim;
+    if (valid) {{
+        for (int dl = 0; dl < dims_per_lane; dl++) {{
+            int d = lane + dl * 32;
+            if (d < dim)
+                partial_dot += q_reg[dl] * (float)key[k_base + d];
+        }}
+    }}
+    float score = valid ? simd_sum(partial_dot) * scale : -INFINITY;
+    float attn_k = (score == -INFINITY || my_lse == -INFINITY) ? 0.0f : exp(score - my_lse);
+
+    float partial_gv = 0.0f;
+    if (valid) {{
+        int v_base = ((b * heads + h) * length + key_i) * dim;
+        for (int dl = 0; dl < dims_per_lane; dl++) {{
+            int d = lane + dl * 32;
+            if (d < dim)
+                partial_gv += go_reg[dl] * (float)value[v_base + d];
+        }}
+    }}
+    float d_attn_k = simd_sum(partial_gv);
+
+    float d_logits_val = attn_k * (d_attn_k - D_i);
+    float d_score = d_logits_val * scale;
+
+    if (valid) {{
+        for (int dl = 0; dl < dims_per_lane; dl++) {{
+            int d = lane + dl * 32;
+            if (d < dim)
+                dq_acc[dl] += d_score * (float)key[k_base + d];
+        }}
+    }}
+
+    if (lane == 0) {{
+        int attn_idx = ((b * heads + h) * out_length + oi) * K + ki;
+        attn_out[attn_idx] = attn_k;
+        d_logits_out[attn_idx] = d_logits_val;
+    }}
+}}
+
+int dq_base = ((b * heads + h) * length + i) * dim;
+for (int dl = 0; dl < dims_per_lane; dl++) {{
+    int d = lane + dl * 32;
+    if (d < dim)
+        d_query[dq_base + d] = dq_acc[dl];
+}}
+// Zero non-strided positions in this stride block
+for (int s = 1; s < stride; s++) {{
+    int zpos = i + s;
+    if (zpos < length) {{
+        int z_base = ((b * heads + h) * length + zpos) * dim;
+        for (int dl = 0; dl < dims_per_lane; dl++) {{
+            int d = lane + dl * 32;
+            if (d < dim) d_query[z_base + d] = 0.0f;
+        }}
+    }}
+}}
+"""
+
+
+def source_2d_fused_simd_backward(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    return _FUSED_SIMD_HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+uint lane = thread_index_in_simdgroup;
+
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int height = query_shape[2];
+const int width = query_shape[3];
+const int dim = query_shape[4];
+const int stride_h = (int)stride_param[0];
+const int stride_w = (int)stride_param[1];
+const int dilation_h = (int)dilation_param[0];
+const int dilation_w = (int)dilation_param[1];
+const int causal_h = (int)causal_param[0];
+const int causal_w = (int)causal_param[1];
+const float scale = scale_param[0];
+const int Kh = {kernel_size};
+const int Kw = {kernel_size};
+const int NH = {nh};
+const int h_out = (height + stride_h - 1) / stride_h;
+const int w_out = (width + stride_w - 1) / stride_w;
+const int k_vol = Kh * Kw;
+const int dims_per_lane = (dim + 31) / 32;
+
+int oj = gid.x / 32;
+int oi = gid.y;
+int bh = gid.z;
+int b  = bh / heads;
+int h  = bh % heads;
+if (b >= batch_size || oi >= h_out || oj >= w_out) return;
+
+int i = oi * stride_h;
+int j = oj * stride_w;
+
+int ni;
+if (causal_h) {{
+    FUSED_GET_CAUSAL_WINDOW_START(ni, i, Kh, dilation_h);
+}} else {{
+    FUSED_GET_WINDOW_START(ni, i, height, Kh, NH, dilation_h);
+}}
+int nj;
+if (causal_w) {{
+    FUSED_GET_CAUSAL_WINDOW_START(nj, j, Kw, dilation_w);
+}} else {{
+    FUSED_GET_WINDOW_START(nj, j, width, Kw, NH, dilation_w);
+}}
+
+int q_base = (((b * heads + h) * height + i) * width + j) * dim;
+float q_reg[FUSED_MAX_DPL];
+for (int dl = 0; dl < dims_per_lane; dl++) {{
+    int d = lane + dl * 32;
+    q_reg[dl] = (d < dim) ? (float)query[q_base + d] : 0.0f;
+}}
+
+int go_base = (((b * heads + h) * h_out + oi) * w_out + oj) * dim;
+float go_reg[FUSED_MAX_DPL];
+for (int dl = 0; dl < dims_per_lane; dl++) {{
+    int d = lane + dl * 32;
+    go_reg[dl] = (d < dim) ? (float)grad_out[go_base + d] : 0.0f;
+}}
+
+// D_i = dot(fwd_output, grad_output)
+float partial_ogo = 0.0f;
+for (int dl = 0; dl < dims_per_lane; dl++) {{
+    int d = lane + dl * 32;
+    if (d < dim)
+        partial_ogo += (float)fwd_out[go_base + d] * go_reg[dl];
+}}
+float D_i = simd_sum(partial_ogo);
+
+// Pass 1: Online softmax to compute LSE
+float row_max = -INFINITY;
+float row_sum = 0.0f;
+for (int ki = 0; ki < Kh; ki++) {{
+    int key_i = ki * dilation_h + ni;
+    bool valid_i = (key_i >= 0 && key_i < height);
+    if (causal_h) valid_i = valid_i && (key_i <= i);
+
+    for (int kj = 0; kj < Kw; kj++) {{
+        int key_j = kj * dilation_w + nj;
+        bool valid = valid_i && (key_j >= 0 && key_j < width);
+        if (causal_w) valid = valid && (key_j <= j);
+
+        float partial_dot = 0.0f;
+        int k_base = (((b * heads + h) * height + key_i) * width + key_j) * dim;
+        if (valid) {{
+            for (int dl = 0; dl < dims_per_lane; dl++) {{
+                int d = lane + dl * 32;
+                if (d < dim)
+                    partial_dot += q_reg[dl] * (float)key[k_base + d];
+            }}
+        }}
+        float score = valid ? simd_sum(partial_dot) * scale : -INFINITY;
+
+        float new_max = max(row_max, score);
+        if (new_max != -INFINITY) {{
+            float correction = (row_max == -INFINITY) ? 0.0f : exp(row_max - new_max);
+            row_sum *= correction;
+        }}
+        row_max = new_max;
+        float exp_score = (score == -INFINITY) ? 0.0f : exp(score - row_max);
+        row_sum += exp_score;
+    }}
+}}
+
+float my_lse = (row_sum > 0.0f) ? (log(row_sum) + row_max) : -INFINITY;
+
+// Pass 2: Compute d_score, d_q, write attn/d_logits
+float dq_acc[FUSED_MAX_DPL];
+for (int dl = 0; dl < dims_per_lane; dl++) dq_acc[dl] = 0.0f;
+
+int flat_k = 0;
+for (int ki = 0; ki < Kh; ki++) {{
+    int key_i = ki * dilation_h + ni;
+    bool valid_i = (key_i >= 0 && key_i < height);
+    if (causal_h) valid_i = valid_i && (key_i <= i);
+
+    for (int kj = 0; kj < Kw; kj++) {{
+        int key_j = kj * dilation_w + nj;
+        bool valid = valid_i && (key_j >= 0 && key_j < width);
+        if (causal_w) valid = valid && (key_j <= j);
+
+        float partial_dot = 0.0f;
+        int k_base = (((b * heads + h) * height + key_i) * width + key_j) * dim;
+        if (valid) {{
+            for (int dl = 0; dl < dims_per_lane; dl++) {{
+                int d = lane + dl * 32;
+                if (d < dim)
+                    partial_dot += q_reg[dl] * (float)key[k_base + d];
+            }}
+        }}
+        float score = valid ? simd_sum(partial_dot) * scale : -INFINITY;
+        float attn_k = (score == -INFINITY || my_lse == -INFINITY) ? 0.0f : exp(score - my_lse);
+
+        float partial_gv = 0.0f;
+        if (valid) {{
+            int v_base = (((b * heads + h) * height + key_i) * width + key_j) * dim;
+            for (int dl = 0; dl < dims_per_lane; dl++) {{
+                int d = lane + dl * 32;
+                if (d < dim)
+                    partial_gv += go_reg[dl] * (float)value[v_base + d];
+            }}
+        }}
+        float d_attn_k = simd_sum(partial_gv);
+
+        float d_logits_val = attn_k * (d_attn_k - D_i);
+        float d_score = d_logits_val * scale;
+
+        if (valid) {{
+            for (int dl = 0; dl < dims_per_lane; dl++) {{
+                int d = lane + dl * 32;
+                if (d < dim)
+                    dq_acc[dl] += d_score * (float)key[k_base + d];
+            }}
+        }}
+
+        if (lane == 0) {{
+            int attn_idx = (((b * heads + h) * h_out + oi) * w_out + oj) * k_vol + flat_k;
+            attn_out[attn_idx] = attn_k;
+            d_logits_out[attn_idx] = d_logits_val;
+        }}
+        flat_k++;
+    }}
+}}
+
+int dq_base = (((b * heads + h) * height + i) * width + j) * dim;
+for (int dl = 0; dl < dims_per_lane; dl++) {{
+    int d = lane + dl * 32;
+    if (d < dim)
+        d_query[dq_base + d] = dq_acc[dl];
+}}
+// Zero non-strided positions in this stride block
+for (int si = 0; si < stride_h; si++) {{
+    for (int sj = 0; sj < stride_w; sj++) {{
+        if (si == 0 && sj == 0) continue;
+        int zi = i + si;
+        int zj = j + sj;
+        if (zi < height && zj < width) {{
+            int z_base = (((b * heads + h) * height + zi) * width + zj) * dim;
+            for (int dl = 0; dl < dims_per_lane; dl++) {{
+                int d = lane + dl * 32;
+                if (d < dim) d_query[z_base + d] = 0.0f;
+            }}
+        }}
+    }}
+}}
+"""
+
+
+def source_3d_fused_simd_backward(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    return _FUSED_SIMD_HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+uint lane = thread_index_in_simdgroup;
+
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int depth = query_shape[2];
+const int height = query_shape[3];
+const int width = query_shape[4];
+const int dim = query_shape[5];
+const int stride_d = (int)stride_param[0];
+const int stride_h = (int)stride_param[1];
+const int stride_w = (int)stride_param[2];
+const int dilation_d = (int)dilation_param[0];
+const int dilation_h = (int)dilation_param[1];
+const int dilation_w = (int)dilation_param[2];
+const int causal_d = (int)causal_param[0];
+const int causal_h = (int)causal_param[1];
+const int causal_w = (int)causal_param[2];
+const float scale = scale_param[0];
+const int Kd = {kernel_size};
+const int Kh = {kernel_size};
+const int Kw = {kernel_size};
+const int NH = {nh};
+const int dp_out = (depth + stride_d - 1) / stride_d;
+const int h_out = (height + stride_h - 1) / stride_h;
+const int w_out = (width + stride_w - 1) / stride_w;
+const int k_vol = Kd * Kh * Kw;
+const int dims_per_lane = (dim + 31) / 32;
+
+int oj  = gid.x / 32;
+int oi  = gid.y;
+int bhd = gid.z;
+int b   = bhd / (heads * dp_out);
+int rem = bhd % (heads * dp_out);
+int h   = rem / dp_out;
+int od  = rem % dp_out;
+if (b >= batch_size || oi >= h_out || oj >= w_out) return;
+
+int dp = od * stride_d;
+int i  = oi * stride_h;
+int j  = oj * stride_w;
+
+int nd;
+if (causal_d) {{
+    FUSED_GET_CAUSAL_WINDOW_START(nd, dp, Kd, dilation_d);
+}} else {{
+    FUSED_GET_WINDOW_START(nd, dp, depth, Kd, NH, dilation_d);
+}}
+int ni;
+if (causal_h) {{
+    FUSED_GET_CAUSAL_WINDOW_START(ni, i, Kh, dilation_h);
+}} else {{
+    FUSED_GET_WINDOW_START(ni, i, height, Kh, NH, dilation_h);
+}}
+int nj;
+if (causal_w) {{
+    FUSED_GET_CAUSAL_WINDOW_START(nj, j, Kw, dilation_w);
+}} else {{
+    FUSED_GET_WINDOW_START(nj, j, width, Kw, NH, dilation_w);
+}}
+
+int q_base = ((((b*heads+h)*depth+dp)*height+i)*width+j)*dim;
+float q_reg[FUSED_MAX_DPL];
+for (int dl = 0; dl < dims_per_lane; dl++) {{
+    int d = lane + dl * 32;
+    q_reg[dl] = (d < dim) ? (float)query[q_base + d] : 0.0f;
+}}
+
+int go_base = ((((b*heads+h)*dp_out+od)*h_out+oi)*w_out+oj)*dim;
+float go_reg[FUSED_MAX_DPL];
+for (int dl = 0; dl < dims_per_lane; dl++) {{
+    int d = lane + dl * 32;
+    go_reg[dl] = (d < dim) ? (float)grad_out[go_base + d] : 0.0f;
+}}
+
+// D_i = dot(fwd_output, grad_output)
+float partial_ogo = 0.0f;
+for (int dl = 0; dl < dims_per_lane; dl++) {{
+    int d = lane + dl * 32;
+    if (d < dim)
+        partial_ogo += (float)fwd_out[go_base + d] * go_reg[dl];
+}}
+float D_i = simd_sum(partial_ogo);
+
+// Pass 1: Online softmax to compute LSE
+float row_max = -INFINITY;
+float row_sum = 0.0f;
+for (int kd = 0; kd < Kd; kd++) {{
+    int key_d = kd * dilation_d + nd;
+    bool valid_d = (key_d >= 0 && key_d < depth);
+    if (causal_d) valid_d = valid_d && (key_d <= dp);
+
+    for (int ki = 0; ki < Kh; ki++) {{
+        int key_i = ki * dilation_h + ni;
+        bool valid_i = valid_d && (key_i >= 0 && key_i < height);
+        if (causal_h) valid_i = valid_i && (key_i <= i);
+
+        for (int kj = 0; kj < Kw; kj++) {{
+            int key_j = kj * dilation_w + nj;
+            bool valid = valid_i && (key_j >= 0 && key_j < width);
+            if (causal_w) valid = valid && (key_j <= j);
+
+            float partial_dot = 0.0f;
+            int k_base = ((((b*heads+h)*depth+key_d)*height+key_i)*width+key_j)*dim;
+            if (valid) {{
+                for (int dl = 0; dl < dims_per_lane; dl++) {{
+                    int d = lane + dl * 32;
+                    if (d < dim)
+                        partial_dot += q_reg[dl] * (float)key[k_base + d];
+                }}
+            }}
+            float score = valid ? simd_sum(partial_dot) * scale : -INFINITY;
+
+            float new_max = max(row_max, score);
+            if (new_max != -INFINITY) {{
+                float correction = (row_max == -INFINITY) ? 0.0f : exp(row_max - new_max);
+                row_sum *= correction;
+            }}
+            row_max = new_max;
+            float exp_score = (score == -INFINITY) ? 0.0f : exp(score - row_max);
+            row_sum += exp_score;
+        }}
+    }}
+}}
+
+float my_lse = (row_sum > 0.0f) ? (log(row_sum) + row_max) : -INFINITY;
+
+// Pass 2: Compute d_score, d_q, write attn/d_logits
+float dq_acc[FUSED_MAX_DPL];
+for (int dl = 0; dl < dims_per_lane; dl++) dq_acc[dl] = 0.0f;
+
+int flat_k = 0;
+for (int kd = 0; kd < Kd; kd++) {{
+    int key_d = kd * dilation_d + nd;
+    bool valid_d = (key_d >= 0 && key_d < depth);
+    if (causal_d) valid_d = valid_d && (key_d <= dp);
+
+    for (int ki = 0; ki < Kh; ki++) {{
+        int key_i = ki * dilation_h + ni;
+        bool valid_i = valid_d && (key_i >= 0 && key_i < height);
+        if (causal_h) valid_i = valid_i && (key_i <= i);
+
+        for (int kj = 0; kj < Kw; kj++) {{
+            int key_j = kj * dilation_w + nj;
+            bool valid = valid_i && (key_j >= 0 && key_j < width);
+            if (causal_w) valid = valid && (key_j <= j);
+
+            float partial_dot = 0.0f;
+            int k_base = ((((b*heads+h)*depth+key_d)*height+key_i)*width+key_j)*dim;
+            if (valid) {{
+                for (int dl = 0; dl < dims_per_lane; dl++) {{
+                    int d = lane + dl * 32;
+                    if (d < dim)
+                        partial_dot += q_reg[dl] * (float)key[k_base + d];
+                }}
+            }}
+            float score = valid ? simd_sum(partial_dot) * scale : -INFINITY;
+            float attn_k = (score == -INFINITY || my_lse == -INFINITY) ? 0.0f : exp(score - my_lse);
+
+            float partial_gv = 0.0f;
+            if (valid) {{
+                int v_base = ((((b*heads+h)*depth+key_d)*height+key_i)*width+key_j)*dim;
+                for (int dl = 0; dl < dims_per_lane; dl++) {{
+                    int d = lane + dl * 32;
+                    if (d < dim)
+                        partial_gv += go_reg[dl] * (float)value[v_base + d];
+                }}
+            }}
+            float d_attn_k = simd_sum(partial_gv);
+
+            float d_logits_val = attn_k * (d_attn_k - D_i);
+            float d_score = d_logits_val * scale;
+
+            if (valid) {{
+                for (int dl = 0; dl < dims_per_lane; dl++) {{
+                    int d = lane + dl * 32;
+                    if (d < dim)
+                        dq_acc[dl] += d_score * (float)key[k_base + d];
+                }}
+            }}
+
+            if (lane == 0) {{
+                int attn_idx = ((((b*heads+h)*dp_out+od)*h_out+oi)*w_out+oj) * k_vol + flat_k;
+                attn_out[attn_idx] = attn_k;
+                d_logits_out[attn_idx] = d_logits_val;
+            }}
+            flat_k++;
+        }}
+    }}
+}}
+
+int dq_base = ((((b*heads+h)*depth+dp)*height+i)*width+j)*dim;
+for (int dl = 0; dl < dims_per_lane; dl++) {{
+    int d = lane + dl * 32;
+    if (d < dim)
+        d_query[dq_base + d] = dq_acc[dl];
+}}
+// Zero non-strided positions in this stride block
+for (int sd = 0; sd < stride_d; sd++) {{
+    for (int si = 0; si < stride_h; si++) {{
+        for (int sj = 0; sj < stride_w; sj++) {{
+            if (sd == 0 && si == 0 && sj == 0) continue;
+            int zd = dp + sd;
+            int zi = i + si;
+            int zj = j + sj;
+            if (zd < depth && zi < height && zj < width) {{
+                int z_base = ((((b*heads+h)*depth+zd)*height+zi)*width+zj)*dim;
+                for (int dl = 0; dl < dims_per_lane; dl++) {{
+                    int d = lane + dl * 32;
+                    if (d < dim) d_query[z_base + d] = 0.0f;
+                }}
+            }}
+        }}
+    }}
+}}
+"""
+
+
+# ---------------------------------------------------------------------------
+# Variable-length (varlen) kernels
+# ---------------------------------------------------------------------------
+
+
+def source_1d_varlen_qk(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int length = query_shape[2];
+const int dim = query_shape[3];
+const int dilation = (int)dilation_param[0];
+const int K = {kernel_size};
+const int NH = {nh};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int i = gid.x;
+if (b >= batch_size || h >= heads || i >= length) return;
+
+int L_b = (int)seq_lens[b];
+if (i >= L_b) {{
+    for (int ki = 0; ki < K; ki++) {{
+        int out_idx = (((b * heads + h) * length + i) * K + ki);
+        out[out_idx] = 0.0f;
+    }}
+    return;
+}}
+
+int ni;
+NATTEN_GET_WINDOW_START(ni, i, L_b, K, NH, dilation);
+
+for (int ki = 0; ki < K; ki++) {{
+    int key_i = ni + ki * dilation;
+    float score;
+    if (key_i >= 0 && key_i < L_b) {{
+        float sum = 0.0f;
+        for (int d = 0; d < dim; d++) {{
+            int q_idx = (((b * heads + h) * length + i) * dim + d);
+            int k_idx = (((b * heads + h) * length + key_i) * dim + d);
+            sum += query[q_idx] * key[k_idx];
+        }}
+        score = sum;
+    }} else {{
+        score = -INFINITY;
+    }}
+    int out_idx = (((b * heads + h) * length + i) * K + ki);
+    out[out_idx] = score;
+}}
+"""
+
+
+def source_1d_varlen_av(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = attention_probs_shape[0];
+const int heads = attention_probs_shape[1];
+const int length = attention_probs_shape[2];
+const int dim = value_shape[3];
+const int dilation = (int)dilation_param[0];
+const int K = {kernel_size};
+const int NH = {nh};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int i = gid.x;
+if (b >= batch_size || h >= heads || i >= length) return;
+
+int L_b = (int)seq_lens[b];
+if (i >= L_b) {{
+    for (int d = 0; d < dim; d++) {{
+        int out_idx = (((b * heads + h) * length + i) * dim + d);
+        out[out_idx] = 0.0f;
+    }}
+    return;
+}}
+
+int ni;
+NATTEN_GET_WINDOW_START(ni, i, L_b, K, NH, dilation);
+
+for (int d = 0; d < dim; d++) {{
+    float sum = 0.0f;
+    for (int ki = 0; ki < K; ki++) {{
+        int val_i = ni + ki * dilation;
+        if (val_i >= 0 && val_i < L_b) {{
+            int attn_idx = (((b * heads + h) * length + i) * K + ki);
+            int val_idx = (((b * heads + h) * length + val_i) * dim + d);
+            sum += attention_probs[attn_idx] * value[val_idx];
+        }}
+    }}
+    int out_idx = (((b * heads + h) * length + i) * dim + d);
+    out[out_idx] = sum;
+}}
+"""
+
+
+def source_2d_varlen_qk(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    area = _area(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int height = query_shape[2];
+const int width = query_shape[3];
+const int dim = query_shape[4];
+const int dilation_h = (int)dilation_param[0];
+const int dilation_w = (int)dilation_param[1];
+const int K = {kernel_size};
+const int NH = {nh};
+const int L = {area};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int i = gid.y;
+int j = gid.x;
+if (b >= batch_size || h >= heads || i >= height || j >= width) return;
+
+int H_b = (int)spatial_sizes[b * 2 + 0];
+int W_b = (int)spatial_sizes[b * 2 + 1];
+if (i >= H_b || j >= W_b) {{
+    for (int n = 0; n < L; n++) {{
+        int out_idx = (((b * heads + h) * height + i) * width + j) * L + n;
+        out[out_idx] = 0.0f;
+    }}
+    return;
+}}
+
+int ni;
+int nj;
+NATTEN_GET_WINDOW_START(ni, i, H_b, K, NH, dilation_h);
+NATTEN_GET_WINDOW_START(nj, j, W_b, K, NH, dilation_w);
+
+int neighbor_idx = 0;
+for (int ki = 0; ki < K; ki++) {{
+    for (int kj = 0; kj < K; kj++) {{
+        int key_i = ni + ki * dilation_h;
+        int key_j = nj + kj * dilation_w;
+        float score;
+        if (key_i >= 0 && key_i < H_b && key_j >= 0 && key_j < W_b) {{
+            float sum = 0.0f;
+            for (int d = 0; d < dim; d++) {{
+                int q_idx = (((b * heads + h) * height + i) * width + j) * dim + d;
+                int k_idx = (((b * heads + h) * height + key_i) * width + key_j) * dim + d;
+                sum += query[q_idx] * key[k_idx];
+            }}
+            score = sum;
+        }} else {{
+            score = -INFINITY;
+        }}
+        int out_idx = (((b * heads + h) * height + i) * width + j) * L + neighbor_idx;
+        out[out_idx] = score;
+        neighbor_idx++;
+    }}
+}}
+"""
+
+
+def source_2d_varlen_av(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    area = _area(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = attention_probs_shape[0];
+const int heads = attention_probs_shape[1];
+const int height = attention_probs_shape[2];
+const int width = attention_probs_shape[3];
+const int dim = value_shape[4];
+const int dilation_h = (int)dilation_param[0];
+const int dilation_w = (int)dilation_param[1];
+const int K = {kernel_size};
+const int NH = {nh};
+const int L = {area};
+
+int b = gid.z / heads;
+int h = gid.z % heads;
+int i = gid.y;
+int j = gid.x;
+if (b >= batch_size || h >= heads || i >= height || j >= width) return;
+
+int H_b = (int)spatial_sizes[b * 2 + 0];
+int W_b = (int)spatial_sizes[b * 2 + 1];
+if (i >= H_b || j >= W_b) {{
+    for (int d = 0; d < dim; d++) {{
+        int out_idx = (((b * heads + h) * height + i) * width + j) * dim + d;
+        out[out_idx] = 0.0f;
+    }}
+    return;
+}}
+
+int ni;
+int nj;
+NATTEN_GET_WINDOW_START(ni, i, H_b, K, NH, dilation_h);
+NATTEN_GET_WINDOW_START(nj, j, W_b, K, NH, dilation_w);
+
+for (int d = 0; d < dim; d++) {{
+    float sum = 0.0f;
+    int neighbor_idx = 0;
+    for (int ki = 0; ki < K; ki++) {{
+        for (int kj = 0; kj < K; kj++) {{
+            int val_i = ni + ki * dilation_h;
+            int val_j = nj + kj * dilation_w;
+            if (val_i >= 0 && val_i < H_b && val_j >= 0 && val_j < W_b) {{
+                int attn_idx = (((b * heads + h) * height + i) * width + j) * L + neighbor_idx;
+                int val_idx = (((b * heads + h) * height + val_i) * width + val_j) * dim + d;
+                sum += attention_probs[attn_idx] * value[val_idx];
+            }}
+            neighbor_idx++;
+        }}
+    }}
+    int out_idx = (((b * heads + h) * height + i) * width + j) * dim + d;
+    out[out_idx] = sum;
+}}
+"""
+
+
+def source_3d_varlen_qk(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    volume = _volume(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = query_shape[0];
+const int heads = query_shape[1];
+const int depth = query_shape[2];
+const int height = query_shape[3];
+const int width = query_shape[4];
+const int dim = query_shape[5];
+const int dilation_d = (int)dilation_param[0];
+const int dilation_h = (int)dilation_param[1];
+const int dilation_w = (int)dilation_param[2];
+const int K = {kernel_size};
+const int NH = {nh};
+const int L = {volume};
+
+int z = gid.z % depth;
+int bh = gid.z / depth;
+int b = bh / heads;
+int h = bh % heads;
+int i = gid.y;
+int j = gid.x;
+if (b >= batch_size || h >= heads || z >= depth || i >= height || j >= width) return;
+
+int D_b = (int)spatial_sizes[b * 3 + 0];
+int H_b = (int)spatial_sizes[b * 3 + 1];
+int W_b = (int)spatial_sizes[b * 3 + 2];
+if (z >= D_b || i >= H_b || j >= W_b) {{
+    for (int n = 0; n < L; n++) {{
+        int out_idx = ((((b * heads + h) * depth + z) * height + i) * width + j) * L + n;
+        out[out_idx] = 0.0f;
+    }}
+    return;
+}}
+
+int nz;
+int ni;
+int nj;
+NATTEN_GET_WINDOW_START(nz, z, D_b, K, NH, dilation_d);
+NATTEN_GET_WINDOW_START(ni, i, H_b, K, NH, dilation_h);
+NATTEN_GET_WINDOW_START(nj, j, W_b, K, NH, dilation_w);
+
+int neighbor_idx = 0;
+for (int kz = 0; kz < K; kz++) {{
+    for (int ki = 0; ki < K; ki++) {{
+        for (int kj = 0; kj < K; kj++) {{
+            int key_z = nz + kz * dilation_d;
+            int key_i = ni + ki * dilation_h;
+            int key_j = nj + kj * dilation_w;
+            float score;
+            if (key_z >= 0 && key_z < D_b && key_i >= 0 && key_i < H_b && key_j >= 0 && key_j < W_b) {{
+                float sum = 0.0f;
+                for (int d = 0; d < dim; d++) {{
+                    int q_idx = ((((b * heads + h) * depth + z) * height + i) * width + j) * dim + d;
+                    int k_idx = ((((b * heads + h) * depth + key_z) * height + key_i) * width + key_j) * dim + d;
+                    sum += query[q_idx] * key[k_idx];
+                }}
+                score = sum;
+            }} else {{
+                score = -INFINITY;
+            }}
+            int out_idx = ((((b * heads + h) * depth + z) * height + i) * width + j) * L + neighbor_idx;
+            out[out_idx] = score;
+            neighbor_idx++;
+        }}
+    }}
+}}
+"""
+
+
+def source_3d_varlen_av(kernel_size: int) -> str:
+    nh = _nh(kernel_size)
+    volume = _volume(kernel_size)
+    return _HELPERS + f"""
+uint3 gid = thread_position_in_grid;
+const int batch_size = attention_probs_shape[0];
+const int heads = attention_probs_shape[1];
+const int depth = attention_probs_shape[2];
+const int height = attention_probs_shape[3];
+const int width = attention_probs_shape[4];
+const int dim = value_shape[5];
+const int dilation_d = (int)dilation_param[0];
+const int dilation_h = (int)dilation_param[1];
+const int dilation_w = (int)dilation_param[2];
+const int K = {kernel_size};
+const int NH = {nh};
+const int L = {volume};
+
+int z = gid.z % depth;
+int bh = gid.z / depth;
+int b = bh / heads;
+int h = bh % heads;
+int i = gid.y;
+int j = gid.x;
+if (b >= batch_size || h >= heads || z >= depth || i >= height || j >= width) return;
+
+int D_b = (int)spatial_sizes[b * 3 + 0];
+int H_b = (int)spatial_sizes[b * 3 + 1];
+int W_b = (int)spatial_sizes[b * 3 + 2];
+if (z >= D_b || i >= H_b || j >= W_b) {{
+    for (int d = 0; d < dim; d++) {{
+        int out_idx = ((((b * heads + h) * depth + z) * height + i) * width + j) * dim + d;
+        out[out_idx] = 0.0f;
+    }}
+    return;
+}}
+
+int nz;
+int ni;
+int nj;
+NATTEN_GET_WINDOW_START(nz, z, D_b, K, NH, dilation_d);
+NATTEN_GET_WINDOW_START(ni, i, H_b, K, NH, dilation_h);
+NATTEN_GET_WINDOW_START(nj, j, W_b, K, NH, dilation_w);
+
+for (int d = 0; d < dim; d++) {{
+    float sum = 0.0f;
+    int neighbor_idx = 0;
+    for (int kz = 0; kz < K; kz++) {{
+        for (int ki = 0; ki < K; ki++) {{
+            for (int kj = 0; kj < K; kj++) {{
+                int val_z = nz + kz * dilation_d;
+                int val_i = ni + ki * dilation_h;
+                int val_j = nj + kj * dilation_w;
+                if (val_z >= 0 && val_z < D_b && val_i >= 0 && val_i < H_b && val_j >= 0 && val_j < W_b) {{
+                    int attn_idx = ((((b * heads + h) * depth + z) * height + i) * width + j) * L + neighbor_idx;
+                    int val_idx = ((((b * heads + h) * depth + val_z) * height + val_i) * width + val_j) * dim + d;
+                    sum += attention_probs[attn_idx] * value[val_idx];
+                }}
+                neighbor_idx++;
+            }}
+        }}
+    }}
+    int out_idx = ((((b * heads + h) * depth + z) * height + i) * width + j) * dim + d;
+    out[out_idx] = sum;
+}}
+"""

@@ -639,10 +639,202 @@ def na3d_av(
     return na3d_av_with_grad(attn, value, ks, st, dil, caus)
 
 
+def _validate_spatial_sizes(
+    spatial_sizes: mx.array,
+    batch_size: int,
+    max_spatial: tuple,
+    kernel_size: tuple,
+    rank: int,
+) -> None:
+    """Validate spatial_sizes for variable-length 2D/3D attention."""
+    if spatial_sizes.ndim != 2 or spatial_sizes.shape[0] != batch_size or spatial_sizes.shape[1] != rank:
+        raise ValueError(
+            f"spatial_sizes must be a [B, {rank}] array, "
+            f"got shape {tuple(spatial_sizes.shape)}."
+        )
+    if spatial_sizes.dtype not in (mx.int32, mx.int64):
+        raise ValueError(f"spatial_sizes must be int32 or int64, got {spatial_sizes.dtype}.")
+    for d in range(rank):
+        min_dim = int(spatial_sizes[:, d].min().item())
+        max_dim = int(spatial_sizes[:, d].max().item())
+        if min_dim < kernel_size[d]:
+            raise ValueError(
+                f"All spatial_sizes[:,{d}] must be >= kernel_size[{d}] ({kernel_size[d]}), "
+                f"but min={min_dim}."
+            )
+        if max_dim > max_spatial[d]:
+            raise ValueError(
+                f"All spatial_sizes[:,{d}] must be <= max_spatial[{d}] ({max_spatial[d]}), "
+                f"but max={max_dim}."
+            )
+
+
+def _validate_seq_lens(
+    seq_lens: mx.array, batch_size: int, l_max: int, kernel_size: int,
+) -> None:
+    """Validate seq_lens for variable-length attention."""
+    if seq_lens.ndim != 1 or seq_lens.shape[0] != batch_size:
+        raise ValueError(
+            f"seq_lens must be a 1-D array of length B={batch_size}, "
+            f"got shape {tuple(seq_lens.shape)}."
+        )
+    if seq_lens.dtype not in (mx.int32, mx.int64):
+        raise ValueError(f"seq_lens must be int32 or int64, got {seq_lens.dtype}.")
+    min_len = int(seq_lens.min().item())
+    max_len = int(seq_lens.max().item())
+    if min_len < kernel_size:
+        raise ValueError(
+            f"All seq_lens must be >= kernel_size ({kernel_size}), "
+            f"but min(seq_lens)={min_len}."
+        )
+    if max_len > l_max:
+        raise ValueError(
+            f"All seq_lens must be <= L_max ({l_max}), "
+            f"but max(seq_lens)={max_len}."
+        )
+
+
+def na1d_varlen(
+    query: mx.array,
+    key: mx.array,
+    value: mx.array,
+    seq_lens: mx.array,
+    kernel_size: Union[int, Tuple[int]],
+    dilation: Union[int, Tuple[int]] = 1,
+    scale: Optional[float] = None,
+) -> mx.array:
+    """Variable-length 1D neighborhood attention.
+
+    Tensors are padded to a common ``L_max`` but each batch element only
+    attends within its actual length given by ``seq_lens``.  Positions
+    beyond ``seq_lens[b]`` are zeroed in the output.
+
+    Args:
+        query: ``[B, L_max, H, D]``.
+        key: ``[B, L_max, H, D]``.
+        value: ``[B, L_max, H, D]``.
+        seq_lens: ``[B]`` int array — actual length per batch element.
+            Must satisfy ``kernel_size <= seq_lens[b] <= L_max``.
+        kernel_size: Neighborhood window size (scalar or 1-tuple).
+        dilation: Gap between attended positions.  Default ``1``.
+        scale: Logit scaling factor.  Default ``D ** -0.5``.
+
+    Returns:
+        ``[B, L_max, H, D]`` — output with padding positions zeroed.
+    """
+    if query.ndim != 4 or key.ndim != 4 or value.ndim != 4:
+        raise ValueError("na1d_varlen expects query/key/value with shape [B, L, H, D].")
+    if query.shape != key.shape or query.shape != value.shape:
+        raise ValueError("query, key, and value must have identical shapes.")
+
+    B, L_max = query.shape[0], query.shape[1]
+    ks = normalize_kernel_size(kernel_size, 1)
+    dil = normalize_tuple_param(dilation, 1, "dilation")
+
+    _validate_seq_lens(seq_lens, B, L_max, ks[0])
+
+    scale_value = query.shape[-1] ** -0.5 if scale is None else float(scale)
+
+    from natten_mlx.autograd import na1d_varlen_with_grad
+    return na1d_varlen_with_grad(query, key, value, seq_lens, ks, dil, scale_value)
+
+
+def na2d_varlen(
+    query: mx.array,
+    key: mx.array,
+    value: mx.array,
+    spatial_sizes: mx.array,
+    kernel_size: Union[int, Tuple[int, int]],
+    dilation: Union[int, Tuple[int, int]] = 1,
+    scale: Optional[float] = None,
+) -> mx.array:
+    """Variable-length 2D neighborhood attention.
+
+    Tensors are padded to a common ``(H_max, W_max)`` but each batch element
+    only attends within its actual spatial extent given by ``spatial_sizes``.
+    Positions beyond ``(H_b, W_b)`` are zeroed in the output.
+
+    Args:
+        query: ``[B, H_max, W_max, heads, D]``.
+        key: ``[B, H_max, W_max, heads, D]``.
+        value: ``[B, H_max, W_max, heads, D]``.
+        spatial_sizes: ``[B, 2]`` int array — ``(H_b, W_b)`` per batch element.
+        kernel_size: Neighborhood window size (scalar or ``(kH, kW)``).
+        dilation: Gap between attended positions.  Default ``1``.
+        scale: Logit scaling factor.  Default ``D ** -0.5``.
+
+    Returns:
+        ``[B, H_max, W_max, heads, D]`` — output with padding positions zeroed.
+    """
+    if query.ndim != 5 or key.ndim != 5 or value.ndim != 5:
+        raise ValueError("na2d_varlen expects query/key/value with shape [B, H, W, heads, D].")
+    if query.shape != key.shape or query.shape != value.shape:
+        raise ValueError("query, key, and value must have identical shapes.")
+
+    B, H_max, W_max = query.shape[0], query.shape[1], query.shape[2]
+    ks = normalize_kernel_size(kernel_size, 2)
+    dil = normalize_tuple_param(dilation, 2, "dilation")
+
+    _validate_spatial_sizes(spatial_sizes, B, (H_max, W_max), ks, 2)
+
+    scale_value = query.shape[-1] ** -0.5 if scale is None else float(scale)
+
+    from natten_mlx.autograd import na2d_varlen_with_grad
+    return na2d_varlen_with_grad(query, key, value, spatial_sizes, ks, dil, scale_value)
+
+
+def na3d_varlen(
+    query: mx.array,
+    key: mx.array,
+    value: mx.array,
+    spatial_sizes: mx.array,
+    kernel_size: Union[int, Tuple[int, int, int]],
+    dilation: Union[int, Tuple[int, int, int]] = 1,
+    scale: Optional[float] = None,
+) -> mx.array:
+    """Variable-length 3D neighborhood attention.
+
+    Tensors are padded to a common ``(D_max, H_max, W_max)`` but each batch
+    element only attends within its actual spatial extent given by
+    ``spatial_sizes``.  Positions beyond ``(D_b, H_b, W_b)`` are zeroed.
+
+    Args:
+        query: ``[B, D_max, H_max, W_max, heads, D]``.
+        key: ``[B, D_max, H_max, W_max, heads, D]``.
+        value: ``[B, D_max, H_max, W_max, heads, D]``.
+        spatial_sizes: ``[B, 3]`` int array — ``(D_b, H_b, W_b)`` per batch.
+        kernel_size: Neighborhood window size (scalar or ``(kD, kH, kW)``).
+        dilation: Gap between attended positions.  Default ``1``.
+        scale: Logit scaling factor.  Default ``D ** -0.5``.
+
+    Returns:
+        ``[B, D_max, H_max, W_max, heads, D]`` — output with padding zeroed.
+    """
+    if query.ndim != 6 or key.ndim != 6 or value.ndim != 6:
+        raise ValueError("na3d_varlen expects query/key/value with shape [B, D, H, W, heads, dim].")
+    if query.shape != key.shape or query.shape != value.shape:
+        raise ValueError("query, key, and value must have identical shapes.")
+
+    B = query.shape[0]
+    D_max, H_max, W_max = query.shape[1], query.shape[2], query.shape[3]
+    ks = normalize_kernel_size(kernel_size, 3)
+    dil = normalize_tuple_param(dilation, 3, "dilation")
+
+    _validate_spatial_sizes(spatial_sizes, B, (D_max, H_max, W_max), ks, 3)
+
+    scale_value = query.shape[-1] ** -0.5 if scale is None else float(scale)
+
+    from natten_mlx.autograd import na3d_varlen_with_grad
+    return na3d_varlen_with_grad(query, key, value, spatial_sizes, ks, dil, scale_value)
+
+
 __all__ = [
     "na1d",
+    "na1d_varlen",
     "na2d",
+    "na2d_varlen",
     "na3d",
+    "na3d_varlen",
     "na1d_qk",
     "na1d_av",
     "na2d_qk",

@@ -5,6 +5,7 @@ Neighborhood attention ([NATTEN](https://github.com/SHI-Labs/NATTEN)) for Apple 
 ## Features
 
 - **1D, 2D, and 3D** neighborhood attention ops with full dilation, stride, and causal support.
+- **Variable-length (varlen)** attention — padded batches with per-sample spatial sizes, Metal-accelerated for all ranks.
 - **`nn.Module` wrappers**: `NeighborhoodAttention1D`, `2D`, `3D` — drop-in attention layers.
 - **Three backend tiers** with automatic dispatch:
   - **Pure MLX** — full coverage baseline, no compilation needed.
@@ -109,6 +110,27 @@ out_2d = na2d(q2d, k2d, v2d, kernel_size=7)
 out_3d = na3d(q3d, k3d, v3d, kernel_size=(3, 3, 3))
 ```
 
+### Variable-length attention
+
+```python
+import mlx.core as mx
+from natten_mlx import na1d_varlen, na2d_varlen
+
+# 1D: padded batch with per-sample lengths
+q = mx.random.normal((3, 128, 4, 32))   # B=3, L_max=128
+k = mx.random.normal((3, 128, 4, 32))
+v = mx.random.normal((3, 128, 4, 32))
+seq_lens = mx.array([128, 96, 64])
+out = na1d_varlen(q, k, v, kernel_size=7, seq_lens=seq_lens)
+
+# 2D: padded batch with per-sample (H, W)
+q2d = mx.random.normal((2, 32, 32, 4, 32))  # B=2, H_max=32, W_max=32
+k2d = mx.random.normal((2, 32, 32, 4, 32))
+v2d = mx.random.normal((2, 32, 32, 4, 32))
+spatial_sizes = mx.array([[32, 32], [24, 20]])
+out2d = na2d_varlen(q2d, k2d, v2d, kernel_size=7, spatial_sizes=spatial_sizes)
+```
+
 ## Extras: Model-Specific Fused Kernels
 
 The `extras/` namespace provides model-specific optimized kernels that go beyond the core NATTEN ops. These fuse operations like QK + relative position bias (RPB) into single Metal kernel dispatches for maximum performance.
@@ -184,19 +206,32 @@ Full benchmarks with causal configurations: `benchmarks/final-perf.md`.
 
 ### Cross-framework: natten-mlx vs natten-mps
 
-Apple Silicon (M-series), fp32, B=1 H=4 D=32:
+Apple Silicon (M-series), fp32, B=1 H=4 D=32, Metal-accelerated:
 
-| Config | natten-mlx (MLX) | natten-mps (MPS) | MLX speedup |
+| Config | natten-mlx fwd | natten-mps fwd | natten-mlx bwd | natten-mps bwd |
+|---|---|---|---|---|
+| 1D L=256 K=7 | 0.21 ms | 0.25 ms | 0.14 ms | 0.39 ms |
+| 1D L=1024 K=7 | 0.27 ms | 0.40 ms | 0.26 ms | 0.63 ms |
+| 2D 32×32 K=7 | 0.65 ms | 0.88 ms | 1.02 ms | 1.62 ms |
+| 2D 64×64 K=7 | 1.13 ms | 1.32 ms | 0.97 ms | 1.55 ms |
+| 2D 32×32 K=7 causal | 0.29 ms | 0.37 ms | 0.31 ms | 0.49 ms |
+| 3D 16³ K=3 | 0.43 ms | 0.55 ms | 0.50 ms | 0.89 ms |
+
+MLX's compiled Metal primitives have lower dispatch overhead than PyTorch MPS, giving a consistent 1.2–1.5× forward advantage and 1.6–2.8× backward advantage. Both are orders of magnitude faster than pure-framework baselines.
+
+### Variable-length (varlen) attention
+
+Metal-accelerated varlen forward, fp32:
+
+| Config | natten-mlx | natten-mps | MLX speedup |
 |---|---|---|---|
-| 1D L=256 K=7 fwd | 0.24 ms | 0.42 ms | 1.8× |
-| 1D L=1024 K=7 fwd | 0.45 ms | 1.12 ms | 2.5× |
-| 2D 32×32 K=7 fwd | 0.42 ms | 0.96 ms | 2.3× |
-| 2D 64×64 K=7 fwd | 1.52 ms | 3.23 ms | 2.1× |
-| 3D 16³ K=3 fwd | 0.22 ms | 0.56 ms | 2.6× |
-| 1D L=256 K=7 bwd | 0.19 ms | 0.56 ms | 2.9× |
-| 2D 32×32 K=7 bwd | 0.48 ms | 1.73 ms | 3.6× |
+| varlen 1D B=4 L=128 K=7 | 0.53 ms | 1.74 ms | 3.3× |
+| varlen 1D B=4 L=256 K=7 | 0.51 ms | 1.74 ms | 3.4× |
+| varlen 2D B=2 16×16 K=3 | 0.82 ms | 2.39 ms | 2.9× |
+| varlen 2D B=2 32×32 K=7 | 1.23 ms | 3.79 ms | 3.1× |
+| varlen 3D B=2 8³ K=3 | 1.55 ms | 3.82 ms | 2.5× |
 
-MLX's compiled Metal primitives have lower dispatch overhead than PyTorch MPS, giving a consistent 2–3× advantage. Both are orders of magnitude faster than pure-framework baselines.
+Both projects now support GPU-accelerated varlen for all ranks (1D/2D/3D). Backward pass uses per-sample autograd re-differentiation through the standard Metal-accelerated `na*d` kernels.
 
 ### Apple Silicon vs CUDA GPUs — backward pass
 

@@ -496,6 +496,194 @@ def na3d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
     return mx.sum(masked_attn[..., None] * v_neighbors, axis=-2)
 
 
+def na1d_varlen_forward(q, k, v, seq_lens, kernel_size, dilation, scale):
+    """Variable-length 1D NA: per-sample loop over existing na1d_forward."""
+    batch, l_max, heads, head_dim = q.shape
+    stride = (1,)
+    is_causal = (False,)
+
+    if scale is None:
+        scale = head_dim ** -0.5
+
+    parts = []
+    for b in range(batch):
+        L_b = int(seq_lens[b].item())
+        out_b = na1d_forward(
+            q[b:b+1, :L_b], k[b:b+1, :L_b], v[b:b+1, :L_b],
+            kernel_size, stride, dilation, is_causal, scale,
+        )
+        if L_b < l_max:
+            pad = mx.zeros((1, l_max - L_b, heads, head_dim), dtype=q.dtype)
+            out_b = mx.concatenate([out_b, pad], axis=1)
+        parts.append(out_b)
+    return mx.concatenate(parts, axis=0)
+
+
+def na1d_varlen_backward(q, k, v, grad_out, seq_lens, kernel_size, dilation, scale):
+    """Variable-length 1D NA backward: per-sample autodiff."""
+    batch, l_max, heads, head_dim = q.shape
+    stride = (1,)
+    is_causal = (False,)
+
+    if scale is None:
+        scale = head_dim ** -0.5
+
+    dq_parts, dk_parts, dv_parts = [], [], []
+    for b in range(batch):
+        L_b = int(seq_lens[b].item())
+        dq_b, dk_b, dv_b = na1d_backward(
+            q[b:b+1, :L_b], k[b:b+1, :L_b], v[b:b+1, :L_b],
+            grad_out[b:b+1, :L_b],
+            kernel_size, stride, dilation, is_causal, scale,
+        )
+        if L_b < l_max:
+            pad = mx.zeros((1, l_max - L_b, heads, head_dim), dtype=q.dtype)
+            dq_b = mx.concatenate([dq_b, pad], axis=1)
+            dk_b = mx.concatenate([dk_b, pad], axis=1)
+            dv_b = mx.concatenate([dv_b, pad], axis=1)
+        dq_parts.append(dq_b)
+        dk_parts.append(dk_b)
+        dv_parts.append(dv_b)
+    return mx.concatenate(dq_parts, axis=0), mx.concatenate(dk_parts, axis=0), mx.concatenate(dv_parts, axis=0)
+
+
+def na2d_varlen_forward(q, k, v, spatial_sizes, kernel_size, dilation, scale):
+    """Variable-length 2D NA: per-sample loop over existing na2d_forward."""
+    batch, h_max, w_max, heads, head_dim = q.shape
+    stride = (1, 1)
+    is_causal = (False, False)
+
+    if scale is None:
+        scale = head_dim ** -0.5
+
+    parts = []
+    for b in range(batch):
+        H_b = int(spatial_sizes[b, 0].item())
+        W_b = int(spatial_sizes[b, 1].item())
+        out_b = na2d_forward(
+            q[b:b+1, :H_b, :W_b], k[b:b+1, :H_b, :W_b], v[b:b+1, :H_b, :W_b],
+            kernel_size, stride, dilation, is_causal, scale,
+        )
+        if H_b < h_max or W_b < w_max:
+            padded = mx.zeros((1, h_max, w_max, heads, head_dim), dtype=q.dtype)
+            # Can't do slice assignment in MLX, so build via concatenation
+            if W_b < w_max:
+                w_pad = mx.zeros((1, H_b, w_max - W_b, heads, head_dim), dtype=q.dtype)
+                out_b = mx.concatenate([out_b, w_pad], axis=2)
+            if H_b < h_max:
+                h_pad = mx.zeros((1, h_max - H_b, w_max, heads, head_dim), dtype=q.dtype)
+                out_b = mx.concatenate([out_b, h_pad], axis=1)
+        parts.append(out_b)
+    return mx.concatenate(parts, axis=0)
+
+
+def na2d_varlen_backward(q, k, v, grad_out, spatial_sizes, kernel_size, dilation, scale):
+    """Variable-length 2D NA backward: per-sample autodiff."""
+    batch, h_max, w_max, heads, head_dim = q.shape
+    stride = (1, 1)
+    is_causal = (False, False)
+
+    if scale is None:
+        scale = head_dim ** -0.5
+
+    dq_parts, dk_parts, dv_parts = [], [], []
+    for b in range(batch):
+        H_b = int(spatial_sizes[b, 0].item())
+        W_b = int(spatial_sizes[b, 1].item())
+        dq_b, dk_b, dv_b = na2d_backward(
+            q[b:b+1, :H_b, :W_b], k[b:b+1, :H_b, :W_b], v[b:b+1, :H_b, :W_b],
+            grad_out[b:b+1, :H_b, :W_b],
+            kernel_size, stride, dilation, is_causal, scale,
+        )
+        if H_b < h_max or W_b < w_max:
+            if W_b < w_max:
+                w_pad = mx.zeros((1, H_b, w_max - W_b, heads, head_dim), dtype=q.dtype)
+                dq_b = mx.concatenate([dq_b, w_pad], axis=2)
+                dk_b = mx.concatenate([dk_b, w_pad], axis=2)
+                dv_b = mx.concatenate([dv_b, w_pad], axis=2)
+            if H_b < h_max:
+                h_pad = mx.zeros((1, h_max - H_b, w_max, heads, head_dim), dtype=q.dtype)
+                dq_b = mx.concatenate([dq_b, h_pad], axis=1)
+                dk_b = mx.concatenate([dk_b, h_pad], axis=1)
+                dv_b = mx.concatenate([dv_b, h_pad], axis=1)
+        dq_parts.append(dq_b)
+        dk_parts.append(dk_b)
+        dv_parts.append(dv_b)
+    return mx.concatenate(dq_parts, axis=0), mx.concatenate(dk_parts, axis=0), mx.concatenate(dv_parts, axis=0)
+
+
+def na3d_varlen_forward(q, k, v, spatial_sizes, kernel_size, dilation, scale):
+    """Variable-length 3D NA: per-sample loop over existing na3d_forward."""
+    batch, d_max, h_max, w_max, heads, head_dim = q.shape
+    stride = (1, 1, 1)
+    is_causal = (False, False, False)
+
+    if scale is None:
+        scale = head_dim ** -0.5
+
+    parts = []
+    for b in range(batch):
+        D_b = int(spatial_sizes[b, 0].item())
+        H_b = int(spatial_sizes[b, 1].item())
+        W_b = int(spatial_sizes[b, 2].item())
+        out_b = na3d_forward(
+            q[b:b+1, :D_b, :H_b, :W_b], k[b:b+1, :D_b, :H_b, :W_b], v[b:b+1, :D_b, :H_b, :W_b],
+            kernel_size, stride, dilation, is_causal, scale,
+        )
+        # Pad back to full size
+        if W_b < w_max:
+            w_pad = mx.zeros((1, D_b, H_b, w_max - W_b, heads, head_dim), dtype=q.dtype)
+            out_b = mx.concatenate([out_b, w_pad], axis=3)
+        if H_b < h_max:
+            h_pad = mx.zeros((1, D_b, h_max - H_b, w_max, heads, head_dim), dtype=q.dtype)
+            out_b = mx.concatenate([out_b, h_pad], axis=2)
+        if D_b < d_max:
+            d_pad = mx.zeros((1, d_max - D_b, h_max, w_max, heads, head_dim), dtype=q.dtype)
+            out_b = mx.concatenate([out_b, d_pad], axis=1)
+        parts.append(out_b)
+    return mx.concatenate(parts, axis=0)
+
+
+def na3d_varlen_backward(q, k, v, grad_out, spatial_sizes, kernel_size, dilation, scale):
+    """Variable-length 3D NA backward: per-sample autodiff."""
+    batch, d_max, h_max, w_max, heads, head_dim = q.shape
+    stride = (1, 1, 1)
+    is_causal = (False, False, False)
+
+    if scale is None:
+        scale = head_dim ** -0.5
+
+    dq_parts, dk_parts, dv_parts = [], [], []
+    for b in range(batch):
+        D_b = int(spatial_sizes[b, 0].item())
+        H_b = int(spatial_sizes[b, 1].item())
+        W_b = int(spatial_sizes[b, 2].item())
+        dq_b, dk_b, dv_b = na3d_backward(
+            q[b:b+1, :D_b, :H_b, :W_b], k[b:b+1, :D_b, :H_b, :W_b], v[b:b+1, :D_b, :H_b, :W_b],
+            grad_out[b:b+1, :D_b, :H_b, :W_b],
+            kernel_size, stride, dilation, is_causal, scale,
+        )
+        if W_b < w_max:
+            w_pad = mx.zeros((1, D_b, H_b, w_max - W_b, heads, head_dim), dtype=q.dtype)
+            dq_b = mx.concatenate([dq_b, w_pad], axis=3)
+            dk_b = mx.concatenate([dk_b, w_pad], axis=3)
+            dv_b = mx.concatenate([dv_b, w_pad], axis=3)
+        if H_b < h_max:
+            h_pad = mx.zeros((1, D_b, h_max - H_b, w_max, heads, head_dim), dtype=q.dtype)
+            dq_b = mx.concatenate([dq_b, h_pad], axis=2)
+            dk_b = mx.concatenate([dk_b, h_pad], axis=2)
+            dv_b = mx.concatenate([dv_b, h_pad], axis=2)
+        if D_b < d_max:
+            d_pad = mx.zeros((1, d_max - D_b, h_max, w_max, heads, head_dim), dtype=q.dtype)
+            dq_b = mx.concatenate([dq_b, d_pad], axis=1)
+            dk_b = mx.concatenate([dk_b, d_pad], axis=1)
+            dv_b = mx.concatenate([dv_b, d_pad], axis=1)
+        dq_parts.append(dq_b)
+        dk_parts.append(dk_b)
+        dv_parts.append(dv_b)
+    return mx.concatenate(dq_parts, axis=0), mx.concatenate(dk_parts, axis=0), mx.concatenate(dv_parts, axis=0)
+
+
 def na1d_backward(q, k, v, grad_out, kernel_size, stride, dilation, is_causal, scale):
     def _loss_q(q_in):
         out = na1d_forward(q_in, k, v, kernel_size, stride, dilation, is_causal, scale)

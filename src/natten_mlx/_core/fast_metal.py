@@ -22,6 +22,7 @@ from ._metal_sources import (
     source_1d_fused_vec4,
     source_1d_fused_causal_vec4,
     source_1d_fused_causal,
+    source_1d_fused_simd,
     source_1d_qk,
     source_1d_qk_vec4,
     source_1d_qk_backward_q,
@@ -38,6 +39,7 @@ from ._metal_sources import (
     source_2d_fused_vec4,
     source_2d_fused_causal_vec4,
     source_2d_fused_causal,
+    source_2d_fused_simd,
     source_2d_qk,
     source_2d_qk_vec4,
     source_2d_qk_backward_q,
@@ -54,12 +56,22 @@ from ._metal_sources import (
     source_3d_fused_vec4,
     source_3d_fused_causal_vec4,
     source_3d_fused_causal,
+    source_3d_fused_simd,
+    source_1d_fused_simd_backward,
+    source_2d_fused_simd_backward,
+    source_3d_fused_simd_backward,
     source_3d_qk,
     source_3d_qk_vec4,
     source_3d_qk_backward_q,
     source_3d_qk_backward_q_vec4,
     source_3d_qk_backward_k,
     source_3d_qk_backward_k_inverse,
+    source_1d_varlen_qk,
+    source_1d_varlen_av,
+    source_2d_varlen_qk,
+    source_2d_varlen_av,
+    source_3d_varlen_qk,
+    source_3d_varlen_av,
 )
 
 _KERNEL_BUILD_FAILED = False
@@ -120,6 +132,18 @@ _INV_MAP_2D_CACHE: dict[tuple, tuple[mx.array, mx.array, mx.array]] = {}
 _INV_MAP_2D_QK_CACHE: dict[tuple, tuple[mx.array, mx.array, mx.array]] = {}
 _INV_MAP_3D_CACHE: dict[tuple, tuple[mx.array, mx.array, mx.array]] = {}
 _INV_MAP_3D_QK_CACHE: dict[tuple, tuple[mx.array, mx.array, mx.array]] = {}
+_FUSED_SIMD_1D_KERNELS: dict[int, Callable] = {}
+_FUSED_SIMD_2D_KERNELS: dict[int, Callable] = {}
+_FUSED_SIMD_3D_KERNELS: dict[int, Callable] = {}
+_FUSED_SIMD_BWD_1D_KERNELS: dict[int, Callable] = {}
+_FUSED_SIMD_BWD_2D_KERNELS: dict[int, Callable] = {}
+_FUSED_SIMD_BWD_3D_KERNELS: dict[int, Callable] = {}
+_VARLEN_QK_1D_KERNELS: dict[int, Callable] = {}
+_VARLEN_AV_1D_KERNELS: dict[int, Callable] = {}
+_VARLEN_QK_2D_KERNELS: dict[int, Callable] = {}
+_VARLEN_AV_2D_KERNELS: dict[int, Callable] = {}
+_VARLEN_QK_3D_KERNELS: dict[int, Callable] = {}
+_VARLEN_AV_3D_KERNELS: dict[int, Callable] = {}
 _USE_AV_BWD_FUSION = os.getenv("NATTEN_MLX_AV_BWD_FUSION", "").strip() == "1"
 _ENABLE_FORWARD_LOWP_FP32_ROUTE = (
     os.getenv("NATTEN_MLX_FORWARD_LOWP_FP32_ROUTE", "0").strip() == "1"
@@ -1992,9 +2016,517 @@ def _with_grad_fallback(fn, fallback):
         return fallback()
 
 
+# ---------------------------------------------------------------------------
+# Fused SIMD cooperative kernels (32 threads/query, online softmax)
+# ---------------------------------------------------------------------------
+
+
+def _can_use_fused_simd(dim: int) -> bool:
+    """Check if fused SIMD path can be used."""
+    return dim >= 32 and dim % 32 == 0 and dim <= 128
+
+
+def _get_1d_fused_simd_kernel(kernel_size: int):
+    if kernel_size not in _FUSED_SIMD_1D_KERNELS:
+        _FUSED_SIMD_1D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na1d_fused_simd_k{kernel_size}",
+            input_names=[
+                "query", "key", "value",
+                "stride_param", "dilation_param", "causal_param", "scale_param",
+            ],
+            output_names=["out", "lse"],
+            source=source_1d_fused_simd(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _FUSED_SIMD_1D_KERNELS[kernel_size]
+
+
+def _get_2d_fused_simd_kernel(kernel_size: int):
+    if kernel_size not in _FUSED_SIMD_2D_KERNELS:
+        _FUSED_SIMD_2D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na2d_fused_simd_k{kernel_size}",
+            input_names=[
+                "query", "key", "value",
+                "stride_param", "dilation_param", "causal_param", "scale_param",
+            ],
+            output_names=["out", "lse"],
+            source=source_2d_fused_simd(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _FUSED_SIMD_2D_KERNELS[kernel_size]
+
+
+def _get_3d_fused_simd_kernel(kernel_size: int):
+    if kernel_size not in _FUSED_SIMD_3D_KERNELS:
+        _FUSED_SIMD_3D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na3d_fused_simd_k{kernel_size}",
+            input_names=[
+                "query", "key", "value",
+                "stride_param", "dilation_param", "causal_param", "scale_param",
+            ],
+            output_names=["out", "lse"],
+            source=source_3d_fused_simd(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _FUSED_SIMD_3D_KERNELS[kernel_size]
+
+
+def na1d_fused_simd_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
+    """Fused SIMD cooperative forward for 1D NA."""
+    batch, length, heads, dim = q.shape
+    ksize = int(kernel_size[0])
+    step = int(stride[0])
+    dil = int(dilation[0])
+    causal = 1 if bool(is_causal[0]) else 0
+    out_length = _ceil_div(length, step)
+    scale_value = (dim ** -0.5) if scale is None else float(scale)
+
+    def _run():
+        kernel = _get_1d_fused_simd_kernel(ksize)
+        q_m = _to_metal_1d(_forward_native_input(q))
+        k_m = _to_metal_1d(_forward_native_input(k))
+        v_m = _to_metal_1d(_forward_native_input(v))
+        stride_param = mx.array([step], dtype=mx.int32)
+        dilation_param = mx.array([dil], dtype=mx.int32)
+        causal_param = mx.array([causal], dtype=mx.int32)
+        scale_param = mx.array([scale_value], dtype=mx.float32)
+        out, lse = kernel(
+            inputs=[q_m, k_m, v_m, stride_param, dilation_param, causal_param, scale_param],
+            grid=(out_length * 32, 1, batch * heads),
+            threadgroup=(32, 1, 1),
+            output_shapes=[
+                (batch, heads, out_length, dim),
+                (batch, heads, out_length),
+            ],
+            output_dtypes=[mx.float32, mx.float32],
+        )
+        return _cast(_from_metal_1d(out), q.dtype), lse
+
+    return _with_fallback(
+        _run,
+        lambda: (pure.na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale), None),
+    )
+
+
+def na2d_fused_simd_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
+    """Fused SIMD cooperative forward for 2D NA."""
+    batch, height, width, heads, dim = q.shape
+    ksize = int(kernel_size[0])
+    stride_h = int(stride[0])
+    stride_w = int(stride[1])
+    dil_h = int(dilation[0])
+    dil_w = int(dilation[1])
+    causal_h = 1 if bool(is_causal[0]) else 0
+    causal_w = 1 if bool(is_causal[1]) else 0
+    out_height = _ceil_div(height, stride_h)
+    out_width = _ceil_div(width, stride_w)
+    scale_value = (dim ** -0.5) if scale is None else float(scale)
+
+    def _run():
+        kernel = _get_2d_fused_simd_kernel(ksize)
+        q_m = _to_metal_2d(_forward_native_input(q))
+        k_m = _to_metal_2d(_forward_native_input(k))
+        v_m = _to_metal_2d(_forward_native_input(v))
+        stride_param = mx.array([stride_h, stride_w], dtype=mx.int32)
+        dilation_param = mx.array([dil_h, dil_w], dtype=mx.int32)
+        causal_param = mx.array([causal_h, causal_w], dtype=mx.int32)
+        scale_param = mx.array([scale_value], dtype=mx.float32)
+        out, lse = kernel(
+            inputs=[q_m, k_m, v_m, stride_param, dilation_param, causal_param, scale_param],
+            grid=(out_width * 32, out_height, batch * heads),
+            threadgroup=(32, 1, 1),
+            output_shapes=[
+                (batch, heads, out_height, out_width, dim),
+                (batch, heads, out_height, out_width),
+            ],
+            output_dtypes=[mx.float32, mx.float32],
+        )
+        return _cast(_from_metal_2d(out), q.dtype), lse
+
+    return _with_fallback(
+        _run,
+        lambda: (pure.na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale), None),
+    )
+
+
+def na3d_fused_simd_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
+    """Fused SIMD cooperative forward for 3D NA."""
+    batch, depth, height, width, heads, dim = q.shape
+    ksize = int(kernel_size[0])
+    stride_d = int(stride[0])
+    stride_h = int(stride[1])
+    stride_w = int(stride[2])
+    dil_d = int(dilation[0])
+    dil_h = int(dilation[1])
+    dil_w = int(dilation[2])
+    causal_d = 1 if bool(is_causal[0]) else 0
+    causal_h = 1 if bool(is_causal[1]) else 0
+    causal_w = 1 if bool(is_causal[2]) else 0
+    dp_out = _ceil_div(depth, stride_d)
+    out_height = _ceil_div(height, stride_h)
+    out_width = _ceil_div(width, stride_w)
+    scale_value = (dim ** -0.5) if scale is None else float(scale)
+
+    def _run():
+        kernel = _get_3d_fused_simd_kernel(ksize)
+        q_m = _to_metal_3d(_forward_native_input(q))
+        k_m = _to_metal_3d(_forward_native_input(k))
+        v_m = _to_metal_3d(_forward_native_input(v))
+        stride_param = mx.array([stride_d, stride_h, stride_w], dtype=mx.int32)
+        dilation_param = mx.array([dil_d, dil_h, dil_w], dtype=mx.int32)
+        causal_param = mx.array([causal_d, causal_h, causal_w], dtype=mx.int32)
+        scale_param = mx.array([scale_value], dtype=mx.float32)
+        out, lse = kernel(
+            inputs=[q_m, k_m, v_m, stride_param, dilation_param, causal_param, scale_param],
+            grid=(out_width * 32, out_height, batch * heads * dp_out),
+            threadgroup=(32, 1, 1),
+            output_shapes=[
+                (batch, heads, dp_out, out_height, out_width, dim),
+                (batch, heads, dp_out, out_height, out_width),
+            ],
+            output_dtypes=[mx.float32, mx.float32],
+        )
+        return _cast(_from_metal_3d(out), q.dtype), lse
+
+    return _with_fallback(
+        _run,
+        lambda: (pure.na3d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale), None),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fused SIMD backward kernels (two-pass: online softmax + gradient computation)
+# ---------------------------------------------------------------------------
+
+
+def _get_1d_fused_simd_bwd_kernel(kernel_size: int):
+    if kernel_size not in _FUSED_SIMD_BWD_1D_KERNELS:
+        _FUSED_SIMD_BWD_1D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na1d_fused_simd_bwd_k{kernel_size}",
+            input_names=[
+                "query", "key", "value", "grad_out", "fwd_out",
+                "stride_param", "dilation_param", "causal_param", "scale_param",
+            ],
+            output_names=["d_query", "attn_out", "d_logits_out"],
+            source=source_1d_fused_simd_backward(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _FUSED_SIMD_BWD_1D_KERNELS[kernel_size]
+
+
+def _get_2d_fused_simd_bwd_kernel(kernel_size: int):
+    if kernel_size not in _FUSED_SIMD_BWD_2D_KERNELS:
+        _FUSED_SIMD_BWD_2D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na2d_fused_simd_bwd_k{kernel_size}",
+            input_names=[
+                "query", "key", "value", "grad_out", "fwd_out",
+                "stride_param", "dilation_param", "causal_param", "scale_param",
+            ],
+            output_names=["d_query", "attn_out", "d_logits_out"],
+            source=source_2d_fused_simd_backward(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _FUSED_SIMD_BWD_2D_KERNELS[kernel_size]
+
+
+def _get_3d_fused_simd_bwd_kernel(kernel_size: int):
+    if kernel_size not in _FUSED_SIMD_BWD_3D_KERNELS:
+        _FUSED_SIMD_BWD_3D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na3d_fused_simd_bwd_k{kernel_size}",
+            input_names=[
+                "query", "key", "value", "grad_out", "fwd_out",
+                "stride_param", "dilation_param", "causal_param", "scale_param",
+            ],
+            output_names=["d_query", "attn_out", "d_logits_out"],
+            source=source_3d_fused_simd_backward(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _FUSED_SIMD_BWD_3D_KERNELS[kernel_size]
+
+
+def _run_1d_qk_backward_k_inv(dlogits_m, q_m, batch, length, heads, dim, ksize, step, dil, causal, scale_value, out_length):
+    """Run inverse-map kernel to compute grad_k from d_logits and q. Returns metal-layout array."""
+    inv_offsets, inv_attn_base, inv_query_base = _inverse_map_1d_qk(
+        length=length, out_len=out_length, kernel_size=ksize,
+        stride=step, dilation=dil, causal=bool(causal), dim=dim,
+    )
+    scale_param = mx.array([scale_value], dtype=mx.float32)
+    grad_k_kernel = _get_1d_qk_backward_k_inverse_kernel(ksize)
+    return grad_k_kernel(
+        inputs=[dlogits_m, q_m, inv_offsets, inv_attn_base, inv_query_base, scale_param],
+        grid=(dim, length, batch * heads),
+        threadgroup=_threadgroup_grad_v(dim, length),
+        output_shapes=[(batch, heads, length, dim)],
+        output_dtypes=[mx.float32],
+    )[0]
+
+
+def _run_1d_av_backward_v_inv(go_m, attn_m, batch, length, heads, dim, ksize, step, dil, causal, out_length):
+    """Run inverse-map kernel to compute grad_v from attn and grad_out. Returns metal-layout array."""
+    inv_offsets, inv_attn_base, inv_grad_base = _inverse_map_1d(
+        length=length, out_len=out_length, kernel_size=ksize,
+        stride=step, dilation=dil, causal=bool(causal), dim=dim,
+    )
+    target_shape_param = mx.array([length], dtype=mx.int32)
+    use_vec4 = (dim % 4 == 0) and (dim >= 16)
+    grad_v_kernel = (
+        _get_1d_av_backward_v_vec4_kernel(ksize) if use_vec4
+        else _get_1d_av_backward_v_kernel(ksize)
+    )
+    grad_v_x = dim // 4 if use_vec4 else dim
+    grad_v_tg = (
+        _threadgroup_grad_v_1d_vec4(grad_v_x, length) if use_vec4
+        else _threadgroup_grad_v(grad_v_x, length)
+    )
+    return grad_v_kernel(
+        inputs=[attn_m, go_m, target_shape_param, inv_offsets, inv_attn_base, inv_grad_base],
+        grid=(grad_v_x, length, batch * heads),
+        threadgroup=grad_v_tg,
+        output_shapes=[(batch, heads, length, dim)],
+        output_dtypes=[mx.float32],
+    )[0]
+
+
+def _run_2d_qk_backward_k_inv(dlogits_m, q_m, batch, height, width, heads, dim, ksize, stride_h, stride_w, dil_h, dil_w, causal_h, causal_w, scale_value, out_height, out_width):
+    """Run inverse-map kernel to compute grad_k for 2D. Returns metal-layout array."""
+    inv_offsets, inv_attn_base, inv_query_base = _inverse_map_2d_qk(
+        height=height, width=width, out_h=out_height, out_w=out_width,
+        kernel_h=ksize, kernel_w=ksize, stride_h=stride_h, stride_w=stride_w,
+        dilation_h=dil_h, dilation_w=dil_w,
+        causal_h=bool(causal_h), causal_w=bool(causal_w), dim=dim,
+    )
+    scale_param = mx.array([scale_value], dtype=mx.float32)
+    grad_k_kernel = _get_2d_qk_backward_k_inverse_kernel(ksize)
+    return grad_k_kernel(
+        inputs=[dlogits_m, q_m, inv_offsets, inv_attn_base, inv_query_base, scale_param],
+        grid=(dim, height * width, batch * heads),
+        threadgroup=_threadgroup_grad_v(dim, height * width),
+        output_shapes=[(batch, heads, height, width, dim)],
+        output_dtypes=[mx.float32],
+    )[0]
+
+
+def _run_2d_av_backward_v_inv(go_m, attn_m, batch, height, width, heads, dim, ksize, stride_h, stride_w, dil_h, dil_w, causal_h, causal_w, out_height, out_width):
+    """Run inverse-map kernel to compute grad_v for 2D. Returns metal-layout array."""
+    inv_offsets, inv_attn_base, inv_grad_base = _inverse_map_2d(
+        height=height, width=width, out_h=out_height, out_w=out_width,
+        kernel_h=ksize, kernel_w=ksize, stride_h=stride_h, stride_w=stride_w,
+        dilation_h=dil_h, dilation_w=dil_w,
+        causal_h=bool(causal_h), causal_w=bool(causal_w), dim=dim,
+    )
+    target_shape_param = mx.array([height, width], dtype=mx.int32)
+    use_vec4 = (dim % 4 == 0) and (dim >= 16)
+    grad_v_kernel = (
+        _get_2d_av_backward_v_vec4_kernel(ksize) if use_vec4
+        else _get_2d_av_backward_v_kernel(ksize)
+    )
+    grad_v_x = dim // 4 if use_vec4 else dim
+    grad_v_tg = (
+        _threadgroup_grad_v_2d_vec4(grad_v_x, height * width) if use_vec4
+        else _threadgroup_grad_v(grad_v_x, height * width)
+    )
+    return grad_v_kernel(
+        inputs=[attn_m, go_m, target_shape_param, inv_offsets, inv_attn_base, inv_grad_base],
+        grid=(grad_v_x, height * width, batch * heads),
+        threadgroup=grad_v_tg,
+        output_shapes=[(batch, heads, height, width, dim)],
+        output_dtypes=[mx.float32],
+    )[0]
+
+
+def _run_3d_qk_backward_k_inv(dlogits_m, q_m, batch, depth, height, width, heads, dim, ksize, stride_d, stride_h, stride_w, dil_d, dil_h, dil_w, causal_d, causal_h, causal_w, scale_value, dp_out, out_height, out_width):
+    """Run inverse-map kernel to compute grad_k for 3D. Returns metal-layout array."""
+    inv_offsets, inv_attn_base, inv_query_base = _inverse_map_3d_qk(
+        depth=depth, height=height, width=width,
+        out_d=dp_out, out_h=out_height, out_w=out_width,
+        kernel_d=ksize, kernel_h=ksize, kernel_w=ksize,
+        stride_d=stride_d, stride_h=stride_h, stride_w=stride_w,
+        dilation_d=dil_d, dilation_h=dil_h, dilation_w=dil_w,
+        causal_d=bool(causal_d), causal_h=bool(causal_h), causal_w=bool(causal_w),
+        dim=dim,
+    )
+    scale_param = mx.array([scale_value], dtype=mx.float32)
+    grad_k_kernel = _get_3d_qk_backward_k_inverse_kernel(ksize)
+    return grad_k_kernel(
+        inputs=[dlogits_m, q_m, inv_offsets, inv_attn_base, inv_query_base, scale_param],
+        grid=(dim, depth * height * width, batch * heads),
+        threadgroup=_threadgroup_grad_v(dim, depth * height * width),
+        output_shapes=[(batch, heads, depth, height, width, dim)],
+        output_dtypes=[mx.float32],
+    )[0]
+
+
+def _run_3d_av_backward_v_inv(go_m, attn_m, batch, depth, height, width, heads, dim, ksize, stride_d, stride_h, stride_w, dil_d, dil_h, dil_w, causal_d, causal_h, causal_w, dp_out, out_height, out_width):
+    """Run inverse-map kernel to compute grad_v for 3D. Returns metal-layout array."""
+    inv_offsets, inv_attn_base, inv_grad_base = _inverse_map_3d(
+        depth=depth, height=height, width=width,
+        out_d=dp_out, out_h=out_height, out_w=out_width,
+        kernel_d=ksize, kernel_h=ksize, kernel_w=ksize,
+        stride_d=stride_d, stride_h=stride_h, stride_w=stride_w,
+        dilation_d=dil_d, dilation_h=dil_h, dilation_w=dil_w,
+        causal_d=bool(causal_d), causal_h=bool(causal_h), causal_w=bool(causal_w),
+        dim=dim,
+    )
+    target_shape_param = mx.array([depth, height, width], dtype=mx.int32)
+    use_vec4 = (dim % 4 == 0) and (dim >= 16)
+    grad_v_kernel = (
+        _get_3d_av_backward_v_vec4_kernel(ksize) if use_vec4
+        else _get_3d_av_backward_v_kernel(ksize)
+    )
+    grad_v_x = dim // 4 if use_vec4 else dim
+    grad_v_tg = (
+        _threadgroup_grad_v_3d_vec4(grad_v_x, depth * height * width) if use_vec4
+        else _threadgroup_grad_v(grad_v_x, depth * height * width)
+    )
+    return grad_v_kernel(
+        inputs=[attn_m, go_m, target_shape_param, inv_offsets, inv_attn_base, inv_grad_base],
+        grid=(grad_v_x, depth * height * width, batch * heads),
+        threadgroup=grad_v_tg,
+        output_shapes=[(batch, heads, depth, height, width, dim)],
+        output_dtypes=[mx.float32],
+    )[0]
+
+
+def na1d_fused_simd_backward(q, k, v, grad_out, fwd_out, kernel_size, stride, dilation, is_causal, scale):
+    """Fused SIMD backward for 1D NA. Returns (d_q, d_k, d_v)."""
+    batch, length, heads, dim = q.shape
+    ksize = int(kernel_size[0])
+    step = int(stride[0])
+    dil = int(dilation[0])
+    causal = 1 if bool(is_causal[0]) else 0
+    out_length = _ceil_div(length, step)
+    scale_value = (dim ** -0.5) if scale is None else float(scale)
+
+    kernel = _get_1d_fused_simd_bwd_kernel(ksize)
+    q_m = _to_metal_1d(_cast(q, mx.float32))
+    k_m = _to_metal_1d(_cast(k, mx.float32))
+    v_m = _to_metal_1d(_cast(v, mx.float32))
+    go_m = _to_metal_1d(_cast(grad_out, mx.float32))
+    fo_m = _to_metal_1d(_cast(fwd_out, mx.float32))
+    stride_param = mx.array([step], dtype=mx.int32)
+    dilation_param = mx.array([dil], dtype=mx.int32)
+    causal_param = mx.array([causal], dtype=mx.int32)
+    scale_param = mx.array([scale_value], dtype=mx.float32)
+
+    dq_m, attn_m, dlogits_m = kernel(
+        inputs=[q_m, k_m, v_m, go_m, fo_m, stride_param, dilation_param, causal_param, scale_param],
+        grid=(out_length * 32, 1, batch * heads),
+        threadgroup=(32, 1, 1),
+        output_shapes=[
+            (batch, heads, length, dim),
+            (batch, heads, out_length, ksize),
+            (batch, heads, out_length, ksize),
+        ],
+        output_dtypes=[mx.float32, mx.float32, mx.float32],
+    )
+
+    # d_k and d_v via existing inverse-map kernels
+    grad_k = _run_1d_qk_backward_k_inv(dlogits_m, q_m, batch, length, heads, dim, ksize, step, dil, causal, scale_value, out_length)
+    grad_v = _run_1d_av_backward_v_inv(go_m, attn_m, batch, length, heads, dim, ksize, step, dil, causal, out_length)
+
+    return _cast(_from_metal_1d(dq_m), q.dtype), _cast(_from_metal_1d(grad_k), q.dtype), _cast(_from_metal_1d(grad_v), q.dtype)
+
+
+def na2d_fused_simd_backward(q, k, v, grad_out, fwd_out, kernel_size, stride, dilation, is_causal, scale):
+    """Fused SIMD backward for 2D NA. Returns (d_q, d_k, d_v)."""
+    batch, height, width, heads, dim = q.shape
+    ksize = int(kernel_size[0])
+    stride_h = int(stride[0])
+    stride_w = int(stride[1])
+    dil_h = int(dilation[0])
+    dil_w = int(dilation[1])
+    causal_h = 1 if bool(is_causal[0]) else 0
+    causal_w = 1 if bool(is_causal[1]) else 0
+    out_height = _ceil_div(height, stride_h)
+    out_width = _ceil_div(width, stride_w)
+    kk = ksize * ksize
+    scale_value = (dim ** -0.5) if scale is None else float(scale)
+
+    kernel = _get_2d_fused_simd_bwd_kernel(ksize)
+    q_m = _to_metal_2d(_cast(q, mx.float32))
+    k_m = _to_metal_2d(_cast(k, mx.float32))
+    v_m = _to_metal_2d(_cast(v, mx.float32))
+    go_m = _to_metal_2d(_cast(grad_out, mx.float32))
+    fo_m = _to_metal_2d(_cast(fwd_out, mx.float32))
+    stride_param = mx.array([stride_h, stride_w], dtype=mx.int32)
+    dilation_param = mx.array([dil_h, dil_w], dtype=mx.int32)
+    causal_param = mx.array([causal_h, causal_w], dtype=mx.int32)
+    scale_param = mx.array([scale_value], dtype=mx.float32)
+
+    dq_m, attn_m, dlogits_m = kernel(
+        inputs=[q_m, k_m, v_m, go_m, fo_m, stride_param, dilation_param, causal_param, scale_param],
+        grid=(out_width * 32, out_height, batch * heads),
+        threadgroup=(32, 1, 1),
+        output_shapes=[
+            (batch, heads, height, width, dim),
+            (batch, heads, out_height, out_width, kk),
+            (batch, heads, out_height, out_width, kk),
+        ],
+        output_dtypes=[mx.float32, mx.float32, mx.float32],
+    )
+
+    # d_k and d_v via existing inverse-map kernels
+    grad_k = _run_2d_qk_backward_k_inv(dlogits_m, q_m, batch, height, width, heads, dim, ksize, stride_h, stride_w, dil_h, dil_w, causal_h, causal_w, scale_value, out_height, out_width)
+    grad_v = _run_2d_av_backward_v_inv(go_m, attn_m, batch, height, width, heads, dim, ksize, stride_h, stride_w, dil_h, dil_w, causal_h, causal_w, out_height, out_width)
+
+    return _cast(_from_metal_2d(dq_m), q.dtype), _cast(_from_metal_2d(grad_k), q.dtype), _cast(_from_metal_2d(grad_v), q.dtype)
+
+
+def na3d_fused_simd_backward(q, k, v, grad_out, fwd_out, kernel_size, stride, dilation, is_causal, scale):
+    """Fused SIMD backward for 3D NA. Returns (d_q, d_k, d_v)."""
+    batch, depth, height, width, heads, dim = q.shape
+    ksize = int(kernel_size[0])
+    stride_d = int(stride[0])
+    stride_h = int(stride[1])
+    stride_w = int(stride[2])
+    dil_d = int(dilation[0])
+    dil_h = int(dilation[1])
+    dil_w = int(dilation[2])
+    causal_d = 1 if bool(is_causal[0]) else 0
+    causal_h = 1 if bool(is_causal[1]) else 0
+    causal_w = 1 if bool(is_causal[2]) else 0
+    dp_out = _ceil_div(depth, stride_d)
+    out_height = _ceil_div(height, stride_h)
+    out_width = _ceil_div(width, stride_w)
+    kkk = ksize * ksize * ksize
+    scale_value = (dim ** -0.5) if scale is None else float(scale)
+
+    kernel = _get_3d_fused_simd_bwd_kernel(ksize)
+    q_m = _to_metal_3d(_cast(q, mx.float32))
+    k_m = _to_metal_3d(_cast(k, mx.float32))
+    v_m = _to_metal_3d(_cast(v, mx.float32))
+    go_m = _to_metal_3d(_cast(grad_out, mx.float32))
+    fo_m = _to_metal_3d(_cast(fwd_out, mx.float32))
+    stride_param = mx.array([stride_d, stride_h, stride_w], dtype=mx.int32)
+    dilation_param = mx.array([dil_d, dil_h, dil_w], dtype=mx.int32)
+    causal_param = mx.array([causal_d, causal_h, causal_w], dtype=mx.int32)
+    scale_param = mx.array([scale_value], dtype=mx.float32)
+
+    dq_m, attn_m, dlogits_m = kernel(
+        inputs=[q_m, k_m, v_m, go_m, fo_m, stride_param, dilation_param, causal_param, scale_param],
+        grid=(out_width * 32, out_height, batch * heads * dp_out),
+        threadgroup=(32, 1, 1),
+        output_shapes=[
+            (batch, heads, depth, height, width, dim),
+            (batch, heads, dp_out, out_height, out_width, kkk),
+            (batch, heads, dp_out, out_height, out_width, kkk),
+        ],
+        output_dtypes=[mx.float32, mx.float32, mx.float32],
+    )
+
+    # d_k and d_v via existing inverse-map kernels
+    grad_k = _run_3d_qk_backward_k_inv(dlogits_m, q_m, batch, depth, height, width, heads, dim, ksize, stride_d, stride_h, stride_w, dil_d, dil_h, dil_w, causal_d, causal_h, causal_w, scale_value, dp_out, out_height, out_width)
+    grad_v = _run_3d_av_backward_v_inv(go_m, attn_m, batch, depth, height, width, heads, dim, ksize, stride_d, stride_h, stride_w, dil_d, dil_h, dil_w, causal_d, causal_h, causal_w, dp_out, out_height, out_width)
+
+    return _cast(_from_metal_3d(dq_m), q.dtype), _cast(_from_metal_3d(grad_k), q.dtype), _cast(_from_metal_3d(grad_v), q.dtype)
+
+
 def na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
     if not is_available() or not _supports_1d_fused(kernel_size, stride, dilation):
         return pure.na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
+    if _can_use_fused_simd(q.shape[-1]):
+        out, _lse = na1d_fused_simd_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
+        return out
     batch, length, heads, _ = q.shape
     ksize = int(kernel_size[0])
     step = int(stride[0])
@@ -2044,6 +2576,9 @@ def na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
 def na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
     if not is_available() or not _supports_2d_fused(kernel_size, stride, dilation):
         return pure.na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
+    if _can_use_fused_simd(q.shape[-1]):
+        out, _lse = na2d_fused_simd_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
+        return out
     batch, height, width, heads, _ = q.shape
     ksize = int(kernel_size[0])
     stride_h = int(stride[0])
@@ -2126,6 +2661,9 @@ def na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
 def na3d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
     if not is_available():
         return pure.na3d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
+    if _can_use_fused_simd(q.shape[-1]) and _supports_3d_fused(kernel_size, stride, dilation):
+        out, _lse = na3d_fused_simd_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale)
+        return out
     if _supports_3d_fused(kernel_size, stride, dilation):
         batch, depth, height, width, heads, _ = q.shape
         ksize = int(kernel_size[0])
@@ -3247,4 +3785,254 @@ def na3d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal
     return _with_grad_fallback(
         _run,
         lambda: pure.na3d_av_backward(attn, v, grad_out, kernel_size, stride, dilation, is_causal),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Variable-length (varlen) kernel getters
+# ---------------------------------------------------------------------------
+
+
+def _get_1d_varlen_qk_kernel(kernel_size: int):
+    if kernel_size not in _VARLEN_QK_1D_KERNELS:
+        _VARLEN_QK_1D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na1d_varlen_qk_k{kernel_size}",
+            input_names=["query", "key", "seq_lens", "dilation_param"],
+            output_names=["out"],
+            source=source_1d_varlen_qk(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _VARLEN_QK_1D_KERNELS[kernel_size]
+
+
+def _get_1d_varlen_av_kernel(kernel_size: int):
+    if kernel_size not in _VARLEN_AV_1D_KERNELS:
+        _VARLEN_AV_1D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na1d_varlen_av_k{kernel_size}",
+            input_names=["attention_probs", "value", "seq_lens", "dilation_param"],
+            output_names=["out"],
+            source=source_1d_varlen_av(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _VARLEN_AV_1D_KERNELS[kernel_size]
+
+
+def _get_2d_varlen_qk_kernel(kernel_size: int):
+    if kernel_size not in _VARLEN_QK_2D_KERNELS:
+        _VARLEN_QK_2D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na2d_varlen_qk_k{kernel_size}",
+            input_names=["query", "key", "spatial_sizes", "dilation_param"],
+            output_names=["out"],
+            source=source_2d_varlen_qk(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _VARLEN_QK_2D_KERNELS[kernel_size]
+
+
+def _get_2d_varlen_av_kernel(kernel_size: int):
+    if kernel_size not in _VARLEN_AV_2D_KERNELS:
+        _VARLEN_AV_2D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na2d_varlen_av_k{kernel_size}",
+            input_names=["attention_probs", "value", "spatial_sizes", "dilation_param"],
+            output_names=["out"],
+            source=source_2d_varlen_av(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _VARLEN_AV_2D_KERNELS[kernel_size]
+
+
+def _get_3d_varlen_qk_kernel(kernel_size: int):
+    if kernel_size not in _VARLEN_QK_3D_KERNELS:
+        _VARLEN_QK_3D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na3d_varlen_qk_k{kernel_size}",
+            input_names=["query", "key", "spatial_sizes", "dilation_param"],
+            output_names=["out"],
+            source=source_3d_varlen_qk(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _VARLEN_QK_3D_KERNELS[kernel_size]
+
+
+def _get_3d_varlen_av_kernel(kernel_size: int):
+    if kernel_size not in _VARLEN_AV_3D_KERNELS:
+        _VARLEN_AV_3D_KERNELS[kernel_size] = mx.fast.metal_kernel(
+            name=f"natten_mlx_na3d_varlen_av_k{kernel_size}",
+            input_names=["attention_probs", "value", "spatial_sizes", "dilation_param"],
+            output_names=["out"],
+            source=source_3d_varlen_av(kernel_size),
+            ensure_row_contiguous=True,
+        )
+    return _VARLEN_AV_3D_KERNELS[kernel_size]
+
+
+# ---------------------------------------------------------------------------
+# Variable-length (varlen) forward dispatch
+# ---------------------------------------------------------------------------
+
+
+def na1d_varlen_forward(q, k, v, seq_lens, kernel_size, dilation, scale):
+    """Metal-accelerated 1D variable-length neighborhood attention forward."""
+    batch, length, heads, dim = q.shape
+    ksize = int(kernel_size[0])
+    dil = int(dilation[0])
+    scale_value = (dim ** -0.5) if scale is None else float(scale)
+
+    def _run():
+        qk_kernel = _get_1d_varlen_qk_kernel(ksize)
+        av_kernel = _get_1d_varlen_av_kernel(ksize)
+        q_m = _to_metal_1d(_forward_native_input(q))
+        k_m = _to_metal_1d(_forward_native_input(k))
+        v_m = _to_metal_1d(_forward_native_input(v))
+        sl = seq_lens.astype(mx.int32) if seq_lens.dtype != mx.int32 else seq_lens
+        dilation_param = mx.array([dil], dtype=mx.int32)
+
+        attn = qk_kernel(
+            inputs=[q_m, k_m, sl, dilation_param],
+            grid=(length, 1, batch * heads),
+            threadgroup=(min(length, 256), 1, 1),
+            output_shapes=[(batch, heads, length, ksize)],
+            output_dtypes=[mx.float32],
+        )[0]
+
+        # Scale + padding mask + softmax
+        attn = _from_metal_1d(attn) * scale_value
+        # Positions beyond per-sample length → -inf
+        pos = mx.arange(length).reshape(1, length, 1, 1)
+        sl_bc = seq_lens.reshape(batch, 1, 1, 1)
+        pad_mask = pos >= sl_bc
+        attn = mx.where(pad_mask, mx.array(float("-inf"), dtype=attn.dtype), attn)
+        attn = mx.softmax(attn, axis=-1)
+        attn = mx.where(mx.isnan(attn), mx.zeros_like(attn), attn)
+        attn_m = _to_metal_1d(attn)
+
+        out = av_kernel(
+            inputs=[attn_m, v_m, sl, dilation_param],
+            grid=(length, 1, batch * heads),
+            threadgroup=(min(length, 256), 1, 1),
+            output_shapes=[(batch, heads, length, dim)],
+            output_dtypes=[mx.float32],
+        )[0]
+
+        return _cast(_from_metal_1d(out), q.dtype)
+
+    return _with_fallback(
+        _run,
+        lambda: pure.na1d_varlen_forward(q, k, v, seq_lens, kernel_size, dilation, scale),
+    )
+
+
+def na2d_varlen_forward(q, k, v, spatial_sizes, kernel_size, dilation, scale):
+    """Metal-accelerated 2D variable-length neighborhood attention forward."""
+    batch, height, width, heads, dim = q.shape
+    ksize = int(kernel_size[0])
+    area = ksize * ksize
+    dil_h = int(dilation[0])
+    dil_w = int(dilation[1])
+    scale_value = (dim ** -0.5) if scale is None else float(scale)
+
+    def _run():
+        qk_kernel = _get_2d_varlen_qk_kernel(ksize)
+        av_kernel = _get_2d_varlen_av_kernel(ksize)
+        q_m = _to_metal_2d(_forward_native_input(q))
+        k_m = _to_metal_2d(_forward_native_input(k))
+        v_m = _to_metal_2d(_forward_native_input(v))
+        ss = spatial_sizes.astype(mx.int32).reshape(-1) if spatial_sizes.dtype != mx.int32 else spatial_sizes.reshape(-1)
+        dilation_param = mx.array([dil_h, dil_w], dtype=mx.int32)
+
+        tg_x = min(width, 16)
+        tg_y = min(height, 16)
+
+        attn = qk_kernel(
+            inputs=[q_m, k_m, ss, dilation_param],
+            grid=(width, height, batch * heads),
+            threadgroup=(tg_x, tg_y, 1),
+            output_shapes=[(batch, heads, height, width, area)],
+            output_dtypes=[mx.float32],
+        )[0]
+
+        # Scale + 2D padding mask + softmax
+        attn = _from_metal_2d(attn) * scale_value
+        h_pos = mx.arange(height).reshape(1, height, 1, 1, 1)
+        w_pos = mx.arange(width).reshape(1, 1, width, 1, 1)
+        H_b = spatial_sizes[:, 0].reshape(batch, 1, 1, 1, 1)
+        W_b = spatial_sizes[:, 1].reshape(batch, 1, 1, 1, 1)
+        pad_mask = (h_pos >= H_b) | (w_pos >= W_b)
+        attn = mx.where(pad_mask, mx.array(float("-inf"), dtype=attn.dtype), attn)
+        attn = mx.softmax(attn, axis=-1)
+        attn = mx.where(mx.isnan(attn), mx.zeros_like(attn), attn)
+        attn_m = _to_metal_2d(attn)
+
+        out = av_kernel(
+            inputs=[attn_m, v_m, ss, dilation_param],
+            grid=(width, height, batch * heads),
+            threadgroup=(tg_x, tg_y, 1),
+            output_shapes=[(batch, heads, height, width, dim)],
+            output_dtypes=[mx.float32],
+        )[0]
+
+        return _cast(_from_metal_2d(out), q.dtype)
+
+    return _with_fallback(
+        _run,
+        lambda: pure.na2d_varlen_forward(q, k, v, spatial_sizes, kernel_size, dilation, scale),
+    )
+
+
+def na3d_varlen_forward(q, k, v, spatial_sizes, kernel_size, dilation, scale):
+    """Metal-accelerated 3D variable-length neighborhood attention forward."""
+    batch, depth, height, width, heads, dim = q.shape
+    ksize = int(kernel_size[0])
+    volume = ksize * ksize * ksize
+    dil_d = int(dilation[0])
+    dil_h = int(dilation[1])
+    dil_w = int(dilation[2])
+    scale_value = (dim ** -0.5) if scale is None else float(scale)
+
+    def _run():
+        qk_kernel = _get_3d_varlen_qk_kernel(ksize)
+        av_kernel = _get_3d_varlen_av_kernel(ksize)
+        q_m = _to_metal_3d(_forward_native_input(q))
+        k_m = _to_metal_3d(_forward_native_input(k))
+        v_m = _to_metal_3d(_forward_native_input(v))
+        ss = spatial_sizes.astype(mx.int32).reshape(-1) if spatial_sizes.dtype != mx.int32 else spatial_sizes.reshape(-1)
+        dilation_param = mx.array([dil_d, dil_h, dil_w], dtype=mx.int32)
+
+        tg_x = min(width, 8)
+        tg_y = min(height, 8)
+
+        attn = qk_kernel(
+            inputs=[q_m, k_m, ss, dilation_param],
+            grid=(width, height, batch * heads * depth),
+            threadgroup=(tg_x, tg_y, 1),
+            output_shapes=[(batch, heads, depth, height, width, volume)],
+            output_dtypes=[mx.float32],
+        )[0]
+
+        # Scale + 3D padding mask + softmax
+        attn = _from_metal_3d(attn) * scale_value
+        d_pos = mx.arange(depth).reshape(1, depth, 1, 1, 1, 1)
+        h_pos = mx.arange(height).reshape(1, 1, height, 1, 1, 1)
+        w_pos = mx.arange(width).reshape(1, 1, 1, width, 1, 1)
+        D_b = spatial_sizes[:, 0].reshape(batch, 1, 1, 1, 1, 1)
+        H_b = spatial_sizes[:, 1].reshape(batch, 1, 1, 1, 1, 1)
+        W_b = spatial_sizes[:, 2].reshape(batch, 1, 1, 1, 1, 1)
+        pad_mask = (d_pos >= D_b) | (h_pos >= H_b) | (w_pos >= W_b)
+        attn = mx.where(pad_mask, mx.array(float("-inf"), dtype=attn.dtype), attn)
+        attn = mx.softmax(attn, axis=-1)
+        attn = mx.where(mx.isnan(attn), mx.zeros_like(attn), attn)
+        attn_m = _to_metal_3d(attn)
+
+        out = av_kernel(
+            inputs=[attn_m, v_m, ss, dilation_param],
+            grid=(width, height, batch * heads * depth),
+            threadgroup=(tg_x, tg_y, 1),
+            output_shapes=[(batch, heads, depth, height, width, dim)],
+            output_dtypes=[mx.float32],
+        )[0]
+
+        return _cast(_from_metal_3d(out), q.dtype)
+
+    return _with_fallback(
+        _run,
+        lambda: pure.na3d_varlen_forward(q, k, v, spatial_sizes, kernel_size, dilation, scale),
     )

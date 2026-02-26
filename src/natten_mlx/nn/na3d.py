@@ -7,7 +7,7 @@ from typing import Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 
-from natten_mlx.functional import na3d, na3d_av, na3d_qk
+from natten_mlx.functional import na3d, na3d_av, na3d_qk, na3d_varlen
 from natten_mlx.utils.params import normalize_tuple_param
 
 
@@ -77,7 +77,14 @@ class NeighborhoodAttention3D(nn.Module):
         self.proj_drop_rate = float(proj_drop)
         self.proj_drop = nn.Dropout(self.proj_drop_rate) if self.proj_drop_rate > 0.0 else None
 
-    def __call__(self, x: mx.array) -> mx.array:
+    def __call__(self, x: mx.array, spatial_sizes: mx.array | None = None) -> mx.array:
+        """Forward pass.
+
+        Args:
+            x: Input array of shape ``[B, D, H, W, C]``.
+            spatial_sizes: Optional ``[B, 3]`` int array of actual (D, H, W)
+                per batch element for variable-length attention.
+        """
         if x.ndim != 5:
             raise ValueError(f"Expected input shape [B, D, H, W, C], got {x.shape}")
 
@@ -104,7 +111,14 @@ class NeighborhoodAttention3D(nn.Module):
             k = k.squeeze(4)
             v = v.squeeze(4)
 
-        if self.attn_drop_rate > 0.0:
+        if spatial_sizes is not None:
+            out = na3d_varlen(
+                q, k, v, spatial_sizes,
+                kernel_size=self.kernel_size,
+                dilation=self.dilation,
+                scale=self.scale,
+            )
+        elif self.attn_drop_rate > 0.0:
             logits = na3d_qk(
                 q,
                 k,

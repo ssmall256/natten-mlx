@@ -18,6 +18,7 @@ def get_support_matrix() -> dict[str, dict]:
             "available": pure.is_available(),
             "forward": {"na1d": True, "na2d": True, "na3d": True, "split_qk_av": True},
             "backward": {"na1d": True, "na2d": True, "na3d": True, "split_qk_av": True},
+            "varlen": {"na1d": True, "na2d": True, "na3d": True},
             "fusion": {"na1d": False, "na2d": False, "na3d": False},
             "constraints": [],
         },
@@ -25,6 +26,7 @@ def get_support_matrix() -> dict[str, dict]:
             "available": fast_metal.is_available(),
             "forward": {"na1d": True, "na2d": True, "na3d": True, "split_qk_av": True},
             "backward": {"na1d": True, "na2d": True, "na3d": True, "split_qk_av": True},
+            "varlen": {"na1d": True, "na2d": True, "na3d": True},
             "fusion": {"na1d": True, "na2d": True, "na3d": True},
             "constraints": [
                 "Fused 1D fast path: odd K, stride>=1, dilation>=1, causal/non-causal supported.",
@@ -40,6 +42,7 @@ def get_support_matrix() -> dict[str, dict]:
             "available": nanobind.is_available(),
             "forward": {"na1d": True, "na2d": True, "na3d": True, "split_qk_av": True},
             "backward": {"na1d": True, "na2d": True, "na3d": True, "split_qk_av": True},
+            "varlen": {"na1d": False, "na2d": False, "na3d": False},
             "fusion": {"na1d": True, "na2d": True, "na3d": True},
             "constraints": [
                 "Ships with an in-tree implementation that uses nanobind-owned backend kernels where available, otherwise pure fallback.",

@@ -7,7 +7,7 @@ from typing import Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 
-from natten_mlx.functional import na1d, na1d_av, na1d_qk
+from natten_mlx.functional import na1d, na1d_av, na1d_qk, na1d_varlen
 from natten_mlx.utils.params import normalize_tuple_param
 
 
@@ -77,7 +77,14 @@ class NeighborhoodAttention1D(nn.Module):
         self.proj_drop_rate = float(proj_drop)
         self.proj_drop = nn.Dropout(self.proj_drop_rate) if self.proj_drop_rate > 0.0 else None
 
-    def __call__(self, x: mx.array) -> mx.array:
+    def __call__(self, x: mx.array, seq_lens: mx.array | None = None) -> mx.array:
+        """Forward pass.
+
+        Args:
+            x: Input array of shape ``[B, L, C]``.
+            seq_lens: Optional ``[B]`` int array of actual sequence lengths
+                per batch element for variable-length attention.
+        """
         if x.ndim != 3:
             raise ValueError(f"Expected input shape [B, L, C], got {x.shape}")
 
@@ -100,7 +107,14 @@ class NeighborhoodAttention1D(nn.Module):
             k = k.squeeze(2)
             v = v.squeeze(2)
 
-        if self.attn_drop_rate > 0.0:
+        if seq_lens is not None:
+            out = na1d_varlen(
+                q, k, v, seq_lens,
+                kernel_size=self.kernel_size,
+                dilation=self.dilation,
+                scale=self.scale,
+            )
+        elif self.attn_drop_rate > 0.0:
             logits = na1d_qk(
                 q,
                 k,
