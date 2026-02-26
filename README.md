@@ -241,6 +241,7 @@ All timings on **Apple M4 Max**, macOS 26.3, Python 3.11, MLX 0.30.6, float32. E
   - 2D: K ≤ 13
   - 3D: K ≤ 7
 - Unsupported kernel sizes or configurations fall back automatically (to a supported backend or `pure`).
+- **Supported dtypes:** float32, float16, and bfloat16. Low-precision dtypes may be upcast to float32 for certain ops.
 - macOS only (Apple Silicon required for Metal backends).
 
 ---
@@ -281,9 +282,36 @@ This project implements Neighborhood Attention as introduced by the upstream [NA
 
 If you use Neighborhood Attention in research, please cite the original papers:
 
-- Hassani et al., **Neighborhood Attention Transformer** (CVPR 2023)  
-- Hassani & Shi, **Dilated Neighborhood Attention Transformer** (2022)  
+- Hassani et al., **Neighborhood Attention Transformer** (CVPR 2023)
+- Hassani & Shi, **Dilated Neighborhood Attention Transformer** (2022)
 - Hassani et al., **Faster Neighborhood Attention** (NeurIPS 2024)
+
+<details>
+<summary>BibTeX</summary>
+
+```bibtex
+@inproceedings{hassani2023neighborhood,
+  title   = {Neighborhood Attention Transformer},
+  author  = {Hassani, Ali and Walton, Steven and Li, Jiachen and Li, Shen and Shi, Humphrey},
+  booktitle = {CVPR},
+  year    = {2023}
+}
+
+@article{hassani2022dilated,
+  title   = {Dilated Neighborhood Attention Transformer},
+  author  = {Hassani, Ali and Shi, Humphrey},
+  journal = {arXiv preprint arXiv:2209.15001},
+  year    = {2022}
+}
+
+@inproceedings{hassani2024faster,
+  title   = {Faster Neighborhood Attention: Reducing the O(n^2) Cost of Self Attention at the Threadblock Level},
+  author  = {Hassani, Ali and Ke, Wen-Mei and Gong, Jiaming and Walton, Steven and Shi, Humphrey},
+  booktitle = {NeurIPS},
+  year    = {2024}
+}
+```
+</details>
 
 ---
 
