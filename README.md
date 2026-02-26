@@ -5,6 +5,8 @@ Neighborhood Attention ([NATTEN](https://github.com/SHI-Labs/NATTEN)) for Apple 
 > **Disclaimer (unofficial):** This is an independent, unofficial implementation/port for Apple Silicon.  
 > **Not affiliated with** SHI-Labs or the upstream NATTEN project.
 
+This is a focused, Apple-Silicon-first implementation intended to be useful, correct, and easy to install — not a replacement for upstream NATTEN on CUDA.
+
 Neighborhood Attention was introduced by the NATTEN authors. If you use Neighborhood Attention in research, please cite the original papers (see [Acknowledgments](#acknowledgments)).
 
 > **v0.x** — API may change between minor versions. Pin your dependency for production use.
