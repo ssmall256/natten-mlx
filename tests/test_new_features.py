@@ -84,10 +84,10 @@ class TestReturnLSE:
         out, lse = na1d(q, k, v, kernel_size=ks, return_lse=True)
         mx.eval(out, lse)
 
-        # Manual path via split ops
+        # Manual path via split ops — logits already include default scale
         logits = na1d_qk(q, k, kernel_size=ks)
         mx.eval(logits)
-        manual_lse = mx.logsumexp(logits * scale, axis=-1)
+        manual_lse = mx.logsumexp(logits, axis=-1)
         mx.eval(manual_lse)
 
         _allclose(lse, manual_lse, atol=1e-3)
@@ -133,9 +133,10 @@ class TestReturnLSE:
         out, lse = na2d(q, k, v, kernel_size=ks, return_lse=True)
         mx.eval(out, lse)
 
+        # logits already include default scale from na2d_qk
         logits = na2d_qk(q, k, kernel_size=ks)
         mx.eval(logits)
-        manual_lse = mx.logsumexp(logits * scale, axis=-1)
+        manual_lse = mx.logsumexp(logits, axis=-1)
         mx.eval(manual_lse)
 
         _allclose(lse, manual_lse, atol=1e-3)
@@ -181,9 +182,10 @@ class TestReturnLSE:
         out, lse = na3d(q, k, v, kernel_size=ks, return_lse=True)
         mx.eval(out, lse)
 
+        # logits already include default scale from na3d_qk
         logits = na3d_qk(q, k, kernel_size=ks)
         mx.eval(logits)
-        manual_lse = mx.logsumexp(logits * scale, axis=-1)
+        manual_lse = mx.logsumexp(logits, axis=-1)
         mx.eval(manual_lse)
 
         _allclose(lse, manual_lse, atol=1e-3)

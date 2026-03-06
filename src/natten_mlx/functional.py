@@ -178,9 +178,7 @@ def _sdpa_forward(
     out = out.reshape(*([B] + list(spatial_shape) + [H, D]))
 
     if return_lse:
-        # Compute LSE
-        q_t = mx.transpose(q_flat, axes=(0, 2, 1, 3))
-        k_t = mx.transpose(k_flat, axes=(0, 2, 1, 3))
+        # Reuse q_t/k_t from above for LSE computation
         logits = (q_t @ mx.transpose(k_t, axes=(0, 1, 3, 2))) * scale
         lse = mx.logsumexp(logits, axis=-1)
         lse = mx.transpose(lse, axes=(0, 2, 1)).reshape(*([B] + list(spatial_shape) + [H]))
@@ -279,10 +277,9 @@ def na1d(
     has_additional = add_k is not None
 
     if has_additional or return_lse:
-        logits = na1d_qk(query, key, kernel_size=ks, dilation=dil, stride=st, is_causal=caus)
-        logits_scaled = logits * scale_value
-        lse = mx.logsumexp(logits_scaled, axis=-1)
-        attn = mx.softmax(logits_scaled, axis=-1)
+        logits = na1d_qk(query, key, kernel_size=ks, dilation=dil, stride=st, is_causal=caus, scale=scale_value)
+        lse = mx.logsumexp(logits, axis=-1)
+        attn = mx.softmax(logits, axis=-1)
         out = na1d_av(attn, value, kernel_size=ks, dilation=dil, stride=st, is_causal=caus)
 
         if has_additional:
@@ -369,10 +366,9 @@ def na2d(
     has_additional = add_k is not None
 
     if has_additional or return_lse:
-        logits = na2d_qk(query, key, kernel_size=ks, dilation=dil, stride=st, is_causal=caus)
-        logits_scaled = logits * scale_value
-        lse = mx.logsumexp(logits_scaled, axis=-1)
-        attn = mx.softmax(logits_scaled, axis=-1)
+        logits = na2d_qk(query, key, kernel_size=ks, dilation=dil, stride=st, is_causal=caus, scale=scale_value)
+        lse = mx.logsumexp(logits, axis=-1)
+        attn = mx.softmax(logits, axis=-1)
         out = na2d_av(attn, value, kernel_size=ks, dilation=dil, stride=st, is_causal=caus)
 
         if has_additional:
@@ -460,10 +456,9 @@ def na3d(
     has_additional = add_k is not None
 
     if has_additional or return_lse:
-        logits = na3d_qk(query, key, kernel_size=ks, dilation=dil, stride=st, is_causal=caus)
-        logits_scaled = logits * scale_value
-        lse = mx.logsumexp(logits_scaled, axis=-1)
-        attn = mx.softmax(logits_scaled, axis=-1)
+        logits = na3d_qk(query, key, kernel_size=ks, dilation=dil, stride=st, is_causal=caus, scale=scale_value)
+        lse = mx.logsumexp(logits, axis=-1)
+        attn = mx.softmax(logits, axis=-1)
         out = na3d_av(attn, value, kernel_size=ks, dilation=dil, stride=st, is_causal=caus)
 
         if has_additional:
@@ -654,9 +649,12 @@ def _validate_spatial_sizes(
         )
     if spatial_sizes.dtype not in (mx.int32, mx.int64):
         raise ValueError(f"spatial_sizes must be int32 or int64, got {spatial_sizes.dtype}.")
+    mins = [spatial_sizes[:, d].min() for d in range(rank)]
+    maxs = [spatial_sizes[:, d].max() for d in range(rank)]
+    mx.eval(*mins, *maxs)
     for d in range(rank):
-        min_dim = int(spatial_sizes[:, d].min().item())
-        max_dim = int(spatial_sizes[:, d].max().item())
+        min_dim = int(mins[d].item())
+        max_dim = int(maxs[d].item())
         if min_dim < kernel_size[d]:
             raise ValueError(
                 f"All spatial_sizes[:,{d}] must be >= kernel_size[{d}] ({kernel_size[d]}), "
@@ -680,8 +678,10 @@ def _validate_seq_lens(
         )
     if seq_lens.dtype not in (mx.int32, mx.int64):
         raise ValueError(f"seq_lens must be int32 or int64, got {seq_lens.dtype}.")
-    min_len = int(seq_lens.min().item())
-    max_len = int(seq_lens.max().item())
+    min_val, max_val = seq_lens.min(), seq_lens.max()
+    mx.eval(min_val, max_val)
+    min_len = int(min_val.item())
+    max_len = int(max_val.item())
     if min_len < kernel_size:
         raise ValueError(
             f"All seq_lens must be >= kernel_size ({kernel_size}), "

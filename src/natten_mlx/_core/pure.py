@@ -185,8 +185,7 @@ def na1d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
     logits = mx.sum(q_sel[..., None, :] * k_neighbors, axis=-1) * float(scale)
 
     valid_mask = valid[None, :, None, :]
-    neg_inf = mx.full(logits.shape, -float("inf"), dtype=logits.dtype)
-    logits = mx.where(valid_mask, logits, neg_inf)
+    logits = mx.where(valid_mask, logits, mx.array(-float("inf"), dtype=logits.dtype))
 
     weights = mx.softmax(logits, axis=-1)
     return mx.sum(weights[..., None] * v_neighbors, axis=-2)
@@ -243,8 +242,7 @@ def na2d_forward(q, k, v, kernel_size, stride, dilation, is_causal, scale):
     logits = mx.sum(q_sel[..., None, :] * k_neighbors, axis=-1) * float(scale)
 
     valid_mask = valid[None, :, :, None, :]
-    neg_inf = mx.full(logits.shape, -float("inf"), dtype=logits.dtype)
-    logits = mx.where(valid_mask, logits, neg_inf)
+    logits = mx.where(valid_mask, logits, mx.array(-float("inf"), dtype=logits.dtype))
 
     weights = mx.softmax(logits, axis=-1)
     return mx.sum(weights[..., None] * v_neighbors, axis=-2)
@@ -315,7 +313,7 @@ def na1d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
     v_neighbors = mx.transpose(v_neighbors, axes=(0, 1, 3, 2, 4))
 
     valid_mask = valid[None, :, None, :]
-    masked_attn = mx.where(valid_mask, attn, mx.zeros(attn.shape, dtype=attn.dtype))
+    masked_attn = mx.where(valid_mask, attn, mx.array(0, dtype=attn.dtype))
     return mx.sum(masked_attn[..., None] * v_neighbors, axis=-2)
 
 
@@ -399,7 +397,7 @@ def na2d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
     v_neighbors = mx.transpose(v_neighbors, axes=(0, 1, 2, 4, 3, 5))
 
     valid_mask = valid[None, :, :, None, :]
-    masked_attn = mx.where(valid_mask, attn, mx.zeros(attn.shape, dtype=attn.dtype))
+    masked_attn = mx.where(valid_mask, attn, mx.array(0, dtype=attn.dtype))
     return mx.sum(masked_attn[..., None] * v_neighbors, axis=-2)
 
 
@@ -492,7 +490,7 @@ def na3d_av_forward(attn, v, kernel_size, stride, dilation, is_causal):
     v_neighbors = mx.transpose(v_neighbors, axes=(0, 1, 2, 3, 5, 4, 6))
 
     valid_mask = valid[None, :, :, :, None, :]
-    masked_attn = mx.where(valid_mask, attn, mx.zeros(attn.shape, dtype=attn.dtype))
+    masked_attn = mx.where(valid_mask, attn, mx.array(0, dtype=attn.dtype))
     return mx.sum(masked_attn[..., None] * v_neighbors, axis=-2)
 
 
@@ -505,6 +503,7 @@ def na1d_varlen_forward(q, k, v, seq_lens, kernel_size, dilation, scale):
     if scale is None:
         scale = head_dim ** -0.5
 
+    mx.eval(seq_lens)
     parts = []
     for b in range(batch):
         L_b = int(seq_lens[b].item())
@@ -528,6 +527,7 @@ def na1d_varlen_backward(q, k, v, grad_out, seq_lens, kernel_size, dilation, sca
     if scale is None:
         scale = head_dim ** -0.5
 
+    mx.eval(seq_lens)
     dq_parts, dk_parts, dv_parts = [], [], []
     for b in range(batch):
         L_b = int(seq_lens[b].item())
@@ -556,6 +556,7 @@ def na2d_varlen_forward(q, k, v, spatial_sizes, kernel_size, dilation, scale):
     if scale is None:
         scale = head_dim ** -0.5
 
+    mx.eval(spatial_sizes)
     parts = []
     for b in range(batch):
         H_b = int(spatial_sizes[b, 0].item())
@@ -586,6 +587,7 @@ def na2d_varlen_backward(q, k, v, grad_out, spatial_sizes, kernel_size, dilation
     if scale is None:
         scale = head_dim ** -0.5
 
+    mx.eval(spatial_sizes)
     dq_parts, dk_parts, dv_parts = [], [], []
     for b in range(batch):
         H_b = int(spatial_sizes[b, 0].item())
@@ -621,6 +623,7 @@ def na3d_varlen_forward(q, k, v, spatial_sizes, kernel_size, dilation, scale):
     if scale is None:
         scale = head_dim ** -0.5
 
+    mx.eval(spatial_sizes)
     parts = []
     for b in range(batch):
         D_b = int(spatial_sizes[b, 0].item())
@@ -653,6 +656,7 @@ def na3d_varlen_backward(q, k, v, grad_out, spatial_sizes, kernel_size, dilation
     if scale is None:
         scale = head_dim ** -0.5
 
+    mx.eval(spatial_sizes)
     dq_parts, dk_parts, dv_parts = [], [], []
     for b in range(batch):
         D_b = int(spatial_sizes[b, 0].item())
